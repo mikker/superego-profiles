@@ -495,8 +495,7 @@ export default defineUiExtension({
   ...about,
   setup(superego) {
     superego.pane(PANE, { title: 'Board', component: BoardPane, menu: true })
-    const style = document.createElement('style')
-    style.textContent = `
+    const css = `
       .staff-board { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; outline: none; }
       .staff-board__body { flex: 1; min-height: 0; overflow: auto; padding: var(--superego-space-2) var(--superego-space-3) var(--superego-space-6); line-height: 1.45; }
       .staff-board kbd { font: 11px var(--superego-mono); min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: 4px; background: var(--superego-code-chip); color: var(--superego-muted); }
@@ -547,6 +546,11 @@ export default defineUiExtension({
       .staff-board__help td { padding: 4px 18px 4px 0; vertical-align: top; }
       .staff-board__help td:first-child { white-space: nowrap; display: flex; gap: 4px; }
     `
+    // Scoped to this profile's own UI where Superego has superego.style (4.2); the whole window's before that.
+    const scoped = (superego as { style?: (css: string) => () => void }).style
+    if (scoped) return scoped.call(superego, css)
+    const style = document.createElement('style')
+    style.textContent = css
     document.head.append(style)
     return () => style.remove()
   },

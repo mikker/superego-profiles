@@ -247,7 +247,7 @@ const STYLES = `
 .run-pill.is-running, .run-pill.is-starting { color: var(--superego-text); }
 .run-pill.is-failed { color: var(--superego-status-error-text, var(--superego-status-error)); }
 .run-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--superego-faint); box-shadow: inset 0 0 0 1px var(--superego-border); }
-:root { --run-green: light-dark(#1f9d45, #32d74b); --run-amber: light-dark(#c27c00, #ffc53d); --run-red: var(--superego-status-error, light-dark(#d70015, #ff6961)); }
+:scope { --run-green: light-dark(#1f9d45, #32d74b); --run-amber: light-dark(#c27c00, #ffc53d); --run-red: var(--superego-status-error, light-dark(#d70015, #ff6961)); }
 .is-running .run-dot { background: var(--run-green); box-shadow: none; }
 .is-starting .run-dot { background: var(--run-amber); box-shadow: none; animation: run-pulse 1.1s ease-in-out infinite; }
 .is-failed .run-dot { background: var(--run-red); box-shadow: none; }
@@ -287,6 +287,9 @@ export default defineUiExtension({
     superego.view('run.pill', { title: 'Dev command', icon: TerminalIcon, context: 'thread', fits: ['header'], default: 'header', component: Pill, menuItem: MenuItem })
     superego.view(LOGS_VIEW, { title: 'Run output', icon: TerminalIcon, context: 'thread', fits: ['pane'], default: 'pane', component: Logs })
     superego.slot('thread.badge', Mark)
+    // Scoped to this profile's own UI where Superego has superego.style (4.2); the whole window's before that.
+    const scoped = (superego as { style?: (css: string) => () => void }).style
+    if (scoped) return scoped.call(superego, STYLES)
     const style = document.createElement('style')
     style.textContent = STYLES
     document.head.append(style)

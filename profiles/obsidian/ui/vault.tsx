@@ -26,8 +26,7 @@ export default defineUiExtension({
       },
       target: (href) => { const link = parseWikilink(href); return link ? `${link.target}${link.heading ? ` › ${link.heading}` : ''}` : href },
     })
-    const style = document.createElement('style')
-    style.textContent = `
+    const css = `
       .vault-graph { flex: 1; display: flex; flex-direction: column; min-height: 0; }
       .vault-graph__canvas { flex: 1; width: 100%; min-height: 0; cursor: grab; touch-action: none; }
       .vault-graph__legend { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; font-size: 12px; color: var(--superego-muted); }
@@ -36,6 +35,11 @@ export default defineUiExtension({
       .vault-note__backlinks a { color: var(--superego-accent); text-decoration: none; }
       .vault-note__backlinks h3 { width: 100%; margin: 0 0 4px; font-size: 12px; color: var(--superego-muted); font-weight: 600; }
     `
+    // Scoped to this profile's own UI where Superego has superego.style (4.2); the whole window's before that.
+    const scoped = (superego as { style?: (css: string) => () => void }).style
+    if (scoped) return scoped.call(superego, css)
+    const style = document.createElement('style')
+    style.textContent = css
     document.head.append(style)
     return () => style.remove()
   },
