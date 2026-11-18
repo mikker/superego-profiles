@@ -290,7 +290,7 @@ function BoardPane({ machine, thread }: PaneProps) {
     return t ? <ThreadRef key={about} machine={machine.id} id={t.id} /> : <span key={about}>{about}</span>
   }
   const row = (item: Item, className: string, inner: ReactNode) => (
-    <div key={item.key} data-key={item.key} className={`staff-board__item ${className}${item === at ? ' is-cursor' : ''}`} onClick={() => setCursor(item.key)}>
+    <div key={item.key} data-key={item.key} className={`staff-board__item ${className}${item === at ? ' is-cursor' : ''}`} onClick={() => { setCursor(item.key); if (item.kind === 'wave') toggle(item) }}>
       {inner}
     </div>
   )
@@ -422,7 +422,7 @@ function BoardPane({ machine, thread }: PaneProps) {
     return (
       <section key={w.index} className="staff-board__wave">
         {header && row(header, 'staff-board__wavehead', <>
-          <span className="staff-board__chev">{shows(w) ? '▾' : '▸'}</span>
+          <span className={`staff-board__chev${shows(w) ? ' is-open' : ''}`}>▸</span>
           <span className="staff-board__wavetitle">{w.index >= 0 ? `Wave ${w.index + 1} · ${w.title}` : w.title}</span>
           <span className="staff-board__meta">{meta}</span>
         </>)}
@@ -476,7 +476,7 @@ function BoardPane({ machine, thread }: PaneProps) {
         )}
         {needs.length > 0 && (
           <section className="staff-board__needs">
-            <div className="staff-board__heading">Needs you{needing ? <span className="staff-board__count"> {needing}</span> : null}</div>
+            <div className="staff-board__heading">Needs you</div>
             {needs.map(ask)}
           </section>
         )}
@@ -499,10 +499,10 @@ export default defineUiExtension({
     style.textContent = `
       .staff-board { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; outline: none; }
       .staff-board__body { flex: 1; min-height: 0; overflow: auto; padding: var(--superego-space-2) var(--superego-space-3) var(--superego-space-6); line-height: 1.45; }
-      .staff-board kbd { font: 11px var(--superego-mono); min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: 4px; background: var(--superego-code-chip); box-shadow: inset 0 -1px 0 var(--superego-border); color: var(--superego-muted); }
+      .staff-board kbd { font: 11px var(--superego-mono); min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: 4px; background: var(--superego-code-chip); color: var(--superego-muted); }
       .staff-board__item { border-radius: var(--superego-radius); padding: 5px var(--superego-space-3); margin: 0 calc(-1 * var(--superego-space-3)); }
-      .staff-board__item.is-cursor { background: var(--superego-selected); }
-      .staff-board:focus-within .staff-board__item.is-cursor { box-shadow: inset 2px 0 0 var(--superego-accent); }
+      .staff-board__item.is-cursor { background: var(--superego-hover); }
+      .staff-board:focus-within .staff-board__item.is-cursor { background: var(--superego-selected); }
       .staff-board__line { display: flex; align-items: center; gap: 8px; min-height: 22px; min-width: 0; }
       .staff-board__title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
       .staff-board__meta, .staff-board__ago, .staff-board__stat { color: var(--superego-faint); font-size: var(--superego-text-sm); white-space: nowrap; font-variant-numeric: tabular-nums; }
@@ -513,20 +513,16 @@ export default defineUiExtension({
       .staff-board__said .md { line-height: 1.5; }
       .staff-board__line > .superego-status { font-size: 13px; }
       .staff-board .superego-status.staff-board__answered { color: var(--superego-faint); }
-      .staff-board__heading { display: flex; gap: 4px; margin: var(--superego-space-3) 0 var(--superego-space-1); font-size: var(--superego-text-sm); font-weight: 600; color: var(--superego-muted); }
-      .staff-board__count { color: var(--superego-status-blocked-text); }
+      .staff-board__heading { padding: 5px 0; font-weight: 600; }
       .staff-board__ask { padding-top: 8px; padding-bottom: 8px; }
-      .staff-board__ask + .staff-board__ask { border-top: 1px solid var(--superego-line); }
-      .staff-board__ask.is-cursor, .staff-board__ask.is-cursor + .staff-board__ask { border-top-color: transparent; }
-      .staff-board__ask.is-answered { opacity: .75; }
+      .staff-board__ask.is-answered { opacity: .6; }
       .staff-board__q { flex: 1; min-width: 0; }
       .staff-board__about { margin-left: 22px; color: var(--superego-muted); font-size: var(--superego-text-sm); }
       .staff-board__options { display: flex; flex-direction: column; gap: 1px; margin: 6px 0 0 14px; }
       .staff-board__options button { all: unset; display: flex; align-items: baseline; gap: 8px; padding: 3px 8px; border-radius: var(--superego-radius); cursor: default; }
       .staff-board__options button:hover { background: var(--superego-hover); }
       .staff-board__options button.is-picked { background: color-mix(in oklab, var(--superego-accent) 14%, transparent); }
-      .staff-board__options button.is-picked kbd { background: var(--superego-accent); color: var(--superego-accent-text); box-shadow: none; }
-      .staff-board__label { font-weight: 500; }
+      .staff-board__options button.is-picked kbd { background: var(--superego-accent); color: var(--superego-accent-text); }
       .staff-board__desc { color: var(--superego-muted); font-size: var(--superego-text-sm); }
       .staff-board__sending { margin: 6px 0 0 22px; font-size: var(--superego-text-sm); color: var(--superego-accent); display: flex; gap: 6px; align-items: center; }
       .staff-board__failed { margin: 6px 0 0 22px; font-size: var(--superego-text-sm); color: var(--superego-status-error-text); }
@@ -536,17 +532,17 @@ export default defineUiExtension({
       .staff-board__summary { color: var(--superego-muted); margin-top: 2px; }
       .staff-board__steps { display: flex; align-items: center; margin-top: var(--superego-space-3); font-size: var(--superego-text-sm); color: var(--superego-muted); }
       .staff-board__step { display: contents; }
-      .staff-board__step > span:last-child { margin: 0 2px 0 4px; font-weight: 600; color: var(--superego-text); }
-      .staff-board__bar { flex: 1; height: 2px; margin: 0 6px; border-radius: 2px; background: var(--superego-line); }
+      .staff-board__step > span:last-child { margin: 0 2px 0 4px; }
+      .staff-board__bar { flex: 1; height: 2px; margin: 0 6px; border-radius: 2px; background: var(--superego-line); transition: background .6s ease; }
       .staff-board__bar.is-on { background: var(--superego-accent); }
-      .staff-board__wave { margin-top: var(--superego-space-2); border-top: 1px solid var(--superego-line); padding-top: var(--superego-space-1); }
-      .staff-board__needs + .staff-board__wave, .staff-board__plan + .staff-board__wave { margin-top: var(--superego-space-3); }
-      .staff-board__body > .staff-board__wave:first-child { border-top: 0; margin-top: 0; }
-      .staff-board__wavehead { display: flex; align-items: center; gap: 8px; }
+      .staff-board__needs, .staff-board__wave { margin-top: var(--superego-space-4); }
+      .staff-board__body > :first-child { margin-top: 0; }
+      .staff-board__wavehead { display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
       .staff-board__wavetitle { flex: 1; font-weight: 600; }
-      .staff-board__chev { width: 12px; color: var(--superego-muted); font-size: 12px; }
+      .staff-board__chev { width: 12px; color: var(--superego-faint); font-size: var(--superego-text-sm); transition: transform .15s ease; }
+      .staff-board__chev.is-open { transform: rotate(90deg); }
       .staff-board__lane.is-quiet .staff-board__title { color: var(--superego-muted); }
-      .staff-board__need { background: color-mix(in oklab, var(--superego-status-blocked) 18%, transparent); color: var(--superego-status-blocked-text); border-radius: 999px; padding: 0 8px; font-size: var(--superego-text-sm); white-space: nowrap; }
+      .staff-board__need { color: var(--superego-status-blocked-text); font-size: var(--superego-text-sm); white-space: nowrap; }
       .staff-board__help { position: absolute; inset: 0; z-index: 1; background: color-mix(in oklab, var(--superego-bg) 92%, transparent); backdrop-filter: blur(6px); padding: var(--superego-space-6); }
       .staff-board__help td { padding: 4px 18px 4px 0; vertical-align: top; }
       .staff-board__help td:first-child { white-space: nowrap; display: flex; gap: 4px; }

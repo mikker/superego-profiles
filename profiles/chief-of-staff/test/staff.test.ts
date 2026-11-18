@@ -149,6 +149,11 @@ it("reports a child with its branch's changes, keeps it past the archive, and dr
   await window.until(() => pane.text().includes('Did the lane.'), 'the report on the board')
   expect(pane.text()).toContain('Landed')
   expect(pane.text()).toContain('merged')
+  // Its heading folds and unfolds on a click.
+  await pane.click('[data-key="wave:-1"]')
+  await window.until(() => !pane.text().includes('Did the lane.'), 'Landed folded')
+  await pane.click('[data-key="wave:-1"]')
+  await window.until(() => pane.text().includes('Did the lane.'), 'Landed unfolded')
   await pane.click('button[aria-label="Dismiss"]')
   await watched.until((b) => b.reports.length === 0, 'dismissed')
   await window.until(() => pane.text().includes('No threads started yet.'), 'the board empty')
