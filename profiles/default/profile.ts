@@ -4,4 +4,5 @@ export default defineProfile({
   ui: ['./run/ui.tsx'],
   extensions: ['./run/daemon.ts'],
   description: 'default',
+  mcpServers: ['sentry', 'paraframe'],
 })
