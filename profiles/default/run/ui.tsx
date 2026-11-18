@@ -75,6 +75,14 @@ function Pill({ machine, thread }: ViewProps<'thread'>) {
   )
 }
 
+/** Its row in the title bar's ··· menu, when the bar has no room for the pill: "Run: Running", "Run: Failed (1)". */
+function MenuItem({ machine, thread }: ViewProps<'thread'>) {
+  const status = useStatus(machine, thread)
+  const state = status?.state ?? 'idle'
+  const label = state === 'failed' && typeof status?.exitCode === 'number' ? `Failed (${status.exitCode})` : state === 'idle' ? 'Idle' : LABEL[state]
+  return <>Run: {label}</>
+}
+
 // ── The sidebar mark ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 function Mark({ machine, thread }: SlotProps['thread.badge']) {
@@ -276,7 +284,7 @@ const STYLES = `
 export default defineUiExtension({
   ...about,
   setup(superego) {
-    superego.view('run.pill', { title: 'Dev command', icon: TerminalIcon, context: 'thread', fits: ['header'], default: 'header', component: Pill })
+    superego.view('run.pill', { title: 'Dev command', icon: TerminalIcon, context: 'thread', fits: ['header'], default: 'header', component: Pill, menuItem: MenuItem })
     superego.view(LOGS_VIEW, { title: 'Run output', icon: TerminalIcon, context: 'thread', fits: ['pane'], default: 'pane', component: Logs })
     superego.slot('thread.badge', Mark)
     const style = document.createElement('style')
