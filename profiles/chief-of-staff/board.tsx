@@ -493,8 +493,8 @@ function BoardPane({ machine, thread }: PaneProps) {
 
 export default defineUiExtension({
   ...about,
-  // superego.style is 4.2's; the daemon half needs only ^4.
-  api: '^4.2',
+  // superego.style is 4.2's; the daemon half needs only ^4. 5.0 changed nothing these use.
+  api: '^4.2 || ^5',
   setup(superego) {
     superego.pane(PANE, { title: 'Board', component: BoardPane, menu: true })
     const css = `

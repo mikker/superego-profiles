@@ -283,8 +283,8 @@ const STYLES = `
 
 export default defineUiExtension({
   ...about,
-  // superego.style is 4.2's; the daemon half needs only ^4.
-  api: '^4.2',
+  // superego.style is 4.2's; the daemon half needs only ^4. 5.0 changed nothing these use.
+  api: '^4.2 || ^5',
   setup(superego) {
     superego.view('run.pill', { title: 'Dev command', icon: TerminalIcon, context: 'thread', fits: ['header'], default: 'header', component: Pill, menuItem: MenuItem })
     superego.view(LOGS_VIEW, { title: 'Run output', icon: TerminalIcon, context: 'thread', fits: ['pane'], default: 'pane', component: Logs })
