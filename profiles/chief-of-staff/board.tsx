@@ -493,6 +493,8 @@ function BoardPane({ machine, thread }: PaneProps) {
 
 export default defineUiExtension({
   ...about,
+  // superego.style is 4.2's; the daemon half needs only ^4.
+  api: '^4.2',
   setup(superego) {
     superego.pane(PANE, { title: 'Board', component: BoardPane, menu: true })
     const css = `
@@ -546,12 +548,7 @@ export default defineUiExtension({
       .staff-board__help td { padding: 4px 18px 4px 0; vertical-align: top; }
       .staff-board__help td:first-child { white-space: nowrap; display: flex; gap: 4px; }
     `
-    // Scoped to this profile's own UI where Superego has superego.style (4.2); the whole window's before that.
-    const scoped = (superego as { style?: (css: string) => () => void }).style
-    if (scoped) return scoped.call(superego, css)
-    const style = document.createElement('style')
-    style.textContent = css
-    document.head.append(style)
-    return () => style.remove()
+    // Only this profile's own UI gets it, gone with the UI.
+    superego.style(css)
   },
 })

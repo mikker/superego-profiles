@@ -283,16 +283,13 @@ const STYLES = `
 
 export default defineUiExtension({
   ...about,
+  // superego.style is 4.2's; the daemon half needs only ^4.
+  api: '^4.2',
   setup(superego) {
     superego.view('run.pill', { title: 'Dev command', icon: TerminalIcon, context: 'thread', fits: ['header'], default: 'header', component: Pill, menuItem: MenuItem })
     superego.view(LOGS_VIEW, { title: 'Run output', icon: TerminalIcon, context: 'thread', fits: ['pane'], default: 'pane', component: Logs })
     superego.slot('thread.badge', Mark)
-    // Scoped to this profile's own UI where Superego has superego.style (4.2); the whole window's before that.
-    const scoped = (superego as { style?: (css: string) => () => void }).style
-    if (scoped) return scoped.call(superego, STYLES)
-    const style = document.createElement('style')
-    style.textContent = STYLES
-    document.head.append(style)
-    return () => style.remove()
+    // Only this profile's own UI gets it, gone with the UI.
+    superego.style(STYLES)
   },
 })

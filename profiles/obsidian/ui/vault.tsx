@@ -6,6 +6,8 @@ import { NotePane, noteTitle } from './note.tsx'
 
 export default defineUiExtension({
   ...about,
+  // superego.style is 4.2's; the daemon half needs only ^4.
+  api: '^4.2',
   setup(superego) {
     superego.pane('graph', { title: 'Graph', component: GraphPane, menu: true })
     // Notes named in the thread ([[GitHub]], `Work/GitHub/GitHub.md`) open in the note pane.
@@ -35,12 +37,7 @@ export default defineUiExtension({
       .vault-note__backlinks a { color: var(--superego-accent); text-decoration: none; }
       .vault-note__backlinks h3 { width: 100%; margin: 0 0 4px; font-size: 12px; color: var(--superego-muted); font-weight: 600; }
     `
-    // Scoped to this profile's own UI where Superego has superego.style (4.2); the whole window's before that.
-    const scoped = (superego as { style?: (css: string) => () => void }).style
-    if (scoped) return scoped.call(superego, css)
-    const style = document.createElement('style')
-    style.textContent = css
-    document.head.append(style)
-    return () => style.remove()
+    // Only this profile's own UI gets it, gone with the UI.
+    superego.style(css)
   },
 })
