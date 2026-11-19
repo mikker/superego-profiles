@@ -1,6 +1,7 @@
 // The board: the user's overview of a lead's work, live, and where they answer what it needs of them. From the top: the
-// programme's title, a line on where it stands and its waves as steps (board_plan); "Needs you": the decisions the lead
-// put to the user (board_ask), the children's own questions (agent-ui's), stalls and failures; then the waves, each lane a
+// programme's title, a line on where it stands and its waves as steps (board_plan); "Needs you": what's still open of the
+// decisions the lead put to the user (board_ask), the children's own questions (agent-ui's), stalls and failures; the
+// decisions answered, folded under "Answered" until dismissed; then the waves, each lane a
 // child at work (its state, changes, time since its last step), a queued start, a planned one, or what landed (its
 // report in a line, all of it on a fold). Without a plan, the children and what landed, ungrouped.
 //
@@ -36,8 +37,12 @@ type Item =
   | { key: string; kind: 'landed'; report: Report }
   | { key: string; kind: 'queued' | 'planned'; title: string; at?: number }
 
-/** A wave as drawn: its title, its lanes, whether it's all landed, and whether it shows them. */
+/**
+ * A wave as drawn: its title, its lanes, whether it's all landed. Index ≥ 0 is the plan's; the others are sections of
+ * their own: ANSWERED, LANDED, and UNPLANNED (the children without a plan, with no header).
+ */
 type Wave = { index: number; title: string; lanes: Item[]; landed: boolean }
+const LANDED = -1, UNPLANNED = -2, ANSWERED = -3
 
 /** An answer picked and waiting to be sent: what it answers, in what words, when it goes. */
 type Pending = { key: string; text: string; option?: number; until: number; send(): Promise<unknown> }
@@ -144,8 +149,9 @@ function BoardPane({ machine, thread }: PaneProps) {
   const queueKey = (q: Board['queued'][number]) => `queued:${q.id ?? q.title}`
   const queuedLane = (q: Board['queued'][number]): Item => ({ key: queueKey(q), kind: 'queued', title: q.title, at: q.at })
 
+  const decisionItem = (decision: Decision): Item => ({ key: `decision:${decision.id}`, kind: 'decision', decision })
   const needs: Item[] = [
-    ...decisions.map((decision): Item => ({ key: `decision:${decision.id}`, kind: 'decision', decision })),
+    ...decisions.filter((d) => !d.answer).map(decisionItem),
     ...children.flatMap((child): Item[] => {
       const waiting = waits[child.id]
       if (waiting) return [{ key: `question:${child.id}`, kind: 'question', child, waiting }]
@@ -177,22 +183,27 @@ function BoardPane({ machine, thread }: PaneProps) {
       ...queued.filter((q) => !placed.has(queueKey(q))).map(queuedLane),
     )
     const rest = gone.filter((r) => !placed.has(r.id))
-    if (rest.length) waves.push({ index: -1, title: 'Landed', lanes: rest.map((report): Item => ({ key: `landed:${report.id}`, kind: 'landed', report })), landed: true })
+    if (rest.length) waves.push({ index: LANDED, title: 'Landed', lanes: rest.map((report): Item => ({ key: `landed:${report.id}`, kind: 'landed', report })), landed: true })
   } else {
     const lanes = [
       ...children.map(laneOf),
       ...queued.map(queuedLane),
     ]
-    if (lanes.length) waves.push({ index: -2, title: '', lanes, landed: false })
-    if (gone.length) waves.push({ index: -1, title: 'Landed', lanes: gone.map((report): Item => ({ key: `landed:${report.id}`, kind: 'landed', report })), landed: true })
+    if (lanes.length) waves.push({ index: UNPLANNED, title: '', lanes, landed: false })
+    if (gone.length) waves.push({ index: LANDED, title: 'Landed', lanes: gone.map((report): Item => ({ key: `landed:${report.id}`, kind: 'landed', report })), landed: true })
   }
-  // A wave all landed folds to a line; what landed outside the waves shows, until folded.
-  const shows = (w: Wave) => w.index === -2 || !(folded[`wave:${w.index}`] ?? (w.landed && w.index >= 0))
+  // The decisions answered, under the needs.
+  const answered = decisions.filter((d) => d.answer).map(decisionItem)
+  if (answered.length) waves.unshift({ index: ANSWERED, title: 'Answered', lanes: answered, landed: false })
+  // A wave all landed folds to a line, and so does what's answered; what landed outside the waves shows, until folded.
+  const shows = (w: Wave) => w.index === UNPLANNED || !(folded[`wave:${w.index}`] ?? (w.index === ANSWERED || (w.landed && w.index >= 0)))
   const items: Item[] = [...needs, ...waves.flatMap((w) => [
-    ...(w.index === -2 ? [] : [{ key: `wave:${w.index}`, kind: 'wave', index: w.index } as Item]),
+    ...(w.index === UNPLANNED ? [] : [{ key: `wave:${w.index}`, kind: 'wave', index: w.index } as Item]),
     ...(shows(w) ? w.lanes : []),
   ])]
   const at = items.find((i) => i.key === cursor) ?? items[0]
+  // A cursor on what went (answered, folded away, dismissed) stays where it lands, not where it was.
+  useEffect(() => { if (cursor !== undefined && at && at.key !== cursor) setCursor(at.key) }, [cursor, at?.key])
 
   // The cursor stays in view, within the board.
   useEffect(() => {
@@ -357,6 +368,7 @@ function BoardPane({ machine, thread }: PaneProps) {
     <div className="staff-board__sub staff-board__said"><Markdown text={report.answer} compact {...(opened[item.key] ? {} : { lines: 1 })} /></div>
   )
   const lane = (item: Item) => {
+    if (item.kind === 'decision') return ask(item)
     if (item.kind === 'child') {
       const { child, report } = item
       const d = details[child.id]
@@ -417,7 +429,7 @@ function BoardPane({ machine, thread }: PaneProps) {
     const sum = (k: 'added' | 'removed') => landed.reduce((n, i) => n + ((i.kind === 'landed' ? i.report.changes : i.kind === 'child' ? i.report?.changes : undefined)?.[k] ?? 0), 0)
     const live = w.lanes.filter((i) => i.kind === 'child' && working(i.child)).length
     const next = w.lanes.filter((i) => i.kind === 'queued' || i.kind === 'planned').length
-    const meta = w.landed ? <>{landed.length} landed{sum('added') || sum('removed') ? <> · <DiffStat added={sum('added')} removed={sum('removed')} /></> : null}</>
+    const meta = w.index === ANSWERED ? w.lanes.length : w.landed ? <>{landed.length} landed{sum('added') || sum('removed') ? <> · <DiffStat added={sum('added')} removed={sum('removed')} /></> : null}</>
       : [live && `${live} running`, landed.length && `${landed.length} landed`, next && `${next} next`].filter(Boolean).join(' · ')
     return (
       <section key={w.index} className="staff-board__wave">
@@ -446,7 +458,7 @@ function BoardPane({ machine, thread }: PaneProps) {
   }, [drawn])
 
   const running = children.filter(working).length
-  const needing = needs.filter((n) => n.kind !== 'decision' || !n.decision.answer).length
+  const needing = needs.length
   const watches = children.map((c) => <Watch key={c.id} machine={machine} child={c.id} onChange={onWait} />)
   if (!drawn) return <>{watches}<PaneMessage>No threads started yet.</PaneMessage></>
   return (

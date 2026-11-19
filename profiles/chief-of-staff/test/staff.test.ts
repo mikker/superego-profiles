@@ -211,13 +211,16 @@ it('lays out the plan and puts decisions on the board, answered there by number 
   expect(pane.text()).toContain('Sending “Own sprite”')
   await window.key('z')
   expect(pane.text()).not.toContain('Sending')
-  // 2 picks, and after a moment it's sent: the lead hears it, and the board keeps it, answered.
+  // 2 picks, and after a moment it's sent: the lead hears it, and the board keeps it, answered, folded out of "Needs you".
   await window.key('2')
   // (The transcript is JSON: the message's newline is in it as \n.)
   await daemon!.until(async () => (await said(lead.id, `Decision ${sprite!.id}: Worth a sprite?\\n→ Keep the pill`)) > 0, 'the lead told')
   expect(await said(lead.id, '→ Own sprite')).toBe(0)
   await watched.until((b) => b.decisions[0]?.answer?.text === 'Keep the pill', 'answered on the board')
-  await window.until(() => pane.text().includes('→ Keep the pill'), 'shown answered')
+  await window.until(() => pane.text().includes('1 needs you'), 'one left open')
+  expect(pane.find('.staff-board__needs')!.textContent).not.toContain('Worth a sprite?')
+  expect(pane.text()).toContain('Answered')
+  expect(pane.text()).not.toContain('→ Keep the pill')
 
   // n goes to the next open one; r answers it in words.
   await window.key('n')
@@ -226,9 +229,12 @@ it('lays out the plan and puts decisions on the board, answered there by number 
   await window.key('enter')
   await daemon!.until(async () => (await said(lead.id, `Decision ${ship!.id}: Ship the lookbook?\\n→ Not yet`)) > 0, 'the words sent')
 
-  // x on an answered one dismisses it; an answer twice is refused.
+  // Nothing needs you now; space unfolds what's answered, and x on one dismisses it; an answer twice is refused.
+  await window.until(() => !pane.find('.staff-board__needs'), 'nothing open')
   await expect(daemon!.dispatch('staff.decide', { id: lead.id, decision: sprite!.id, text: 'Own sprite' })).rejects.toThrow('already answered')
-  await window.key('k')
+  await window.key(' ')
+  await window.until(() => pane.text().includes('→ Keep the pill') && pane.text().includes('→ Not yet'), 'unfolded')
+  await window.key('j')
   await window.key('x')
   await watched.until((b) => b.decisions.length === 1, 'dismissed')
   expect(watched.value.decisions[0]!.id).toBe(ship!.id)
