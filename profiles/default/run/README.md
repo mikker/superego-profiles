@@ -43,7 +43,7 @@ process group that stops together.
 | `run.stop` | SIGTERM to the whole group, SIGKILL after the grace |
 | `run.logs` | open the output pane |
 
-No keyboard shortcut yet: bind one in Settings → Keyboard if you want it.
+⌘⇧R starts or restarts it (change it in Settings → Keyboard).
 
 From ⌘K, or the command line: `superego do run.restart --thread <id>` (`--folder <path>` also works). If several restarts overlap, the newest wins: exactly one process starts, and every caller gets its status
 back.

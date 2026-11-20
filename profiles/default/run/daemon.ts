@@ -214,7 +214,7 @@ export default defineDaemonExtension({
 
     superego.action(defineAction({
       id: 'run.restart', title: 'Restart the dev command', description: "Start this folder's dev command, or restart it if it runs.",
-      expose: ['ui', 'cli'], thread: true, params: target,
+      expose: ['ui', 'cli'], thread: true, params: target, keys: 'mod+shift+r',
       run: async (params) => restart(await folderOf(params)),
     }))
     superego.action(defineAction({
