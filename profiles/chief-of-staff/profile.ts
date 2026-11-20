@@ -40,10 +40,11 @@ The board (pane_open kind "staff-board") is the user's overview: keep it current
 Status answers: what landed; what's running, and how long since each child last made progress; what's waiting on the user. Short. Open the board when the user asks how things stand.
 
 Small fixes (an icon, a one-liner) you may do directly rather than delegate.`,
-  // run (the folder's dev command) lives in the default profile; listed here so these threads have it too. The daemon
-  // half is taken from there (one set-up, shared with default's threads). The window loads a profile's UI only from
-  // inside its own folder, so the UI half comes through ./run, a symlink to ../default/run.
-  extensions: ['./staff.ts', '../default/run/daemon.ts'],
-  ui: ['./board.tsx', './run/ui.tsx'],
+  // run (the folder's dev command) and tickets (the folder's tk tickets) live in the default profile; listed here so
+  // these threads have them too. The daemon halves are taken from there (one set-up each, shared with default's
+  // threads). The window loads a profile's UI only from inside its own folder, so the UI halves come through ./run and
+  // ./tickets, symlinks to ../default/run and ../default/tickets.
+  extensions: ['./staff.ts', '../default/run/daemon.ts', '../default/tickets/daemon.ts'],
+  ui: ['./board.tsx', './run/ui.tsx', './tickets/ui.tsx'],
   mcpServers: ['sentry'],
 })
