@@ -6,11 +6,12 @@
 // report in a line, all of it on a fold). Without a plan, the children and what landed, ungrouped.
 //
 // It's driven from the keyboard (KEYS below): a cursor moves through it, a number answers the decision under it and
-// sends after a moment, in which `z` takes it back. Threads come from what the window knows; the rest from staff.ts.
+// sends after a moment, in which `z` takes it back; `X` (or Clear board) clears what's settled once a programme's done.
+// Threads come from what the window knows; the rest from staff.ts.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
-  ArchiveIcon, DiffStat, defineUiExtension, factsOf, Glyph, has, IconButton, Markdown, PaneHeader, PaneMessage, PaneNote,
-  STATUS_WORDS, StatusGlyph, TextField, ThreadRef, useDispatch, useMethod, useSelection, useThreads, useValue, XIcon,
+  ArchiveIcon, DiffStat, defineUiExtension, factsOf, Glyph, has, IconButton, Markdown, PaneButton, PaneHeader, PaneMessage,
+  PaneNote, STATUS_WORDS, StatusGlyph, TextField, ThreadRef, useDispatch, useMethod, useSelection, useThreads, useValue, XIcon,
   type MachineEntry, type PaneProps, type ThreadInfo,
 } from 'superego/ui'
 import {
@@ -84,6 +85,7 @@ const KEYS: [string, string][] = [
   ['n N', 'Next and previous open question'],
   ['space', 'Fold a wave, or open a report'],
   ['x', 'Dismiss an answered decision or a report'],
+  ['X', 'Clear the board: settled reports, answered decisions, the plan'],
   ['a', 'Archive the child, once it’s done'],
   ['? esc', 'These keys'],
 ]
@@ -254,6 +256,9 @@ function BoardPane({ machine, thread }: PaneProps) {
     if (item?.kind === 'decision' && item.decision.answer) void dispatch('staff.dismiss', { id: thread.id, decision: item.decision.id }, on)
     else if (item?.kind === 'landed' || (item?.kind === 'child' && item.report && settled(item.child))) void dispatch('staff.dismiss', { id: thread.id, child: item.kind === 'landed' ? item.report.id : item.child.id }, on)
   }
+  // What staff.clear takes: reports but a working child's, answered decisions, the plan.
+  const clearable = Boolean(plan) || decisions.some((d) => d.answer) || reports.some((r) => !children.some((c) => c.id === r.id && working(c)))
+  const clear = () => { if (clearable) void dispatch('staff.clear', { id: thread.id }, on) }
   const archive = (item: Item | undefined) => {
     if (item && 'child' in item && settled(item.child)) void dispatch('thread.archive', { thread: item.child.id }, on)
   }
@@ -287,6 +292,7 @@ function BoardPane({ machine, thread }: PaneProps) {
       const next = k === 'n' ? asking.find((o) => items.indexOf(o) > i) ?? asking[0] : asking.findLast((o) => items.indexOf(o) < i) ?? asking.at(-1)
       if (next) setCursor(next.key)
     } else if (k === ' ') toggle(at)
+    else if (k === 'X' || (k === 'x' && e.shiftKey)) clear()
     else if (k === 'x') dismiss(at)
     else if (k === 'a') archive(at)
     else if (k === '?') setHelp(true)
@@ -467,6 +473,7 @@ function BoardPane({ machine, thread }: PaneProps) {
       {watches}
       <PaneHeader>
         <PaneNote>{needing ? `${needing} need${needing === 1 ? 's' : ''} you · ` : ''}{running} running{queued.length ? ` · ${queued.length} queued` : ''}</PaneNote>
+        <PaneButton onClick={clear} disabled={!clearable} title="Settled reports, answered decisions and the plan (X)">Clear board</PaneButton>
       </PaneHeader>
       <div className="staff-board__body">
         {plan && (plan.title || plan.summary || plan.waves.length > 1) && (

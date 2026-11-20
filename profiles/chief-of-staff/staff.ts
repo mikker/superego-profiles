@@ -1,9 +1,10 @@
 // The chief of staff's machinery, for threads with this profile (its "leads"): a watchdog over their children, check-ins
 // they schedule for themselves, a cap on how many children run at once (thread_start beyond it queues the start), and
 // what the board pane shows: each child's changes, its reports (kept until the user dismisses them), the programme as the
-// lead lays it out (board_plan), and the decisions it puts to the user (board_ask), answered on the board. One timer,
-// owned by the extension and gone with it; what must survive a restart (check-ins, queued starts, reports, the plan,
-// decisions) is kept in each lead's state.
+// lead lays it out (board_plan), and the decisions it puts to the user (board_ask), answered on the board; what's settled
+// of it all is cleared at once when a programme's done (staff.clear, board_clear). One timer, owned by the extension and
+// gone with it; what must survive a restart (check-ins, queued starts, reports, the plan, decisions) is kept in each
+// lead's state.
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
@@ -168,6 +169,22 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
         const next = await state.get(lead)
         board.update(lead, (b) => ({ ...(b ?? EMPTY_BOARD), ...kept(next) }))
         return next
+      }
+      /**
+       * Clear a lead's board once a programme's done: the reports of children done with (finished, failed or archived),
+       * the answered decisions and the plan. Running children (stalled or asking too), open decisions and queued starts stay.
+       */
+      async function clear(lead: string) {
+        const at = Date.now()
+        const live = (await superego.threads.list()).filter((t) => t.parent === lead && running(t, at)).map((t) => t.id)
+        let cleared = { reports: 0, decisions: 0, plan: false }
+        await keep(lead, ({ plan, ...s }) => {
+          const reports = (s.reports ?? []).filter((r) => live.includes(r.id))
+          const decisions = (s.decisions ?? []).filter((d) => !d.answer)
+          cleared = { reports: (s.reports ?? []).length - reports.length, decisions: (s.decisions ?? []).length - decisions.length, plan: Boolean(plan) }
+          return { ...s, reports, decisions }
+        })
+        return cleared
       }
       /** The lead of the thread a tool call is in. */
       const leadOf = (conversationId: number) => {
@@ -347,6 +364,16 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
         },
       }))
 
+      // The programme's done: the board cleared of what's settled (staff.clear, board_clear).
+      superego.action(defineAction({
+        id: 'staff.clear', title: 'Clear the board: settled reports, answered decisions and the plan', expose: ['ui'],
+        params: obj({ id: str() }),
+        async run({ id }) {
+          await clear(id)
+          return null
+        },
+      }))
+
       // The user answers a decision on the board: it's kept as answered, and the lead is told.
       superego.action(defineAction({
         id: 'staff.decide', title: 'Answer a decision on the board', expose: ['ui', 'cli'],
@@ -375,7 +402,7 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
         },
       }))
 
-      /** The lead's board tools: lay out the programme, put a decision to the user, close one. */
+      /** The lead's board tools: lay out the programme, put a decision to the user, close one, clear the board. */
       function boardTools() {
         return [
           defineTool({
@@ -426,6 +453,17 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
                 ...s, decisions: (s.decisions ?? []).map((d) => d.id === id ? { ...d, answer: { text: note?.trim() || 'Settled', at: Date.now(), by: 'lead' as const } } : d),
               }))
               return text(`Closed decision ${id}.`)
+            },
+          }),
+          defineTool({
+            name: 'board_clear',
+            description: 'Clear the board once a programme is done: settled reports, answered decisions and the plan; running work and open questions stay.',
+            parameters: obj({}),
+            async execute(_, api) {
+              const { reports, decisions, plan } = await clear(leadOf(api.conversationId))
+              const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
+              const what = [reports && plural(reports, 'report'), decisions && plural(decisions, 'answered decision'), plan && 'the plan'].filter(Boolean)
+              return text(what.length ? `Cleared ${what.length > 1 ? `${what.slice(0, -1).join(', ')} and ${what.at(-1)}` : what[0]} from the board.` : 'Nothing to clear.')
             },
           }),
         ]

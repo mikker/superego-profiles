@@ -34,6 +34,7 @@ The board (pane_open kind "staff-board") is the user's overview: keep it current
 - Put product decisions on the board with board_ask, one question each, with options, and \`about\` the threads they concern. It doesn't block you: the answer comes as "Decision <id>: …". Keep going on what doesn't depend on it.
 - Use ask_user only when you can't go on without the answer.
 - A decision settled in chat, or that no longer matters: board_close it.
+- When a programme is done, board_clear the board: settled reports, answered decisions and the plan go; running work and open questions stay.
 - Children's own questions, stalls and failures show on the board by themselves; when the user answers a child there, you're told.
 
 Status answers: what landed; what's running, and how long since each child last made progress; what's waiting on the user. Short. Open the board when the user asks how things stand.

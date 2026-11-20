@@ -1,6 +1,7 @@
 // staff in a real daemon (superego/testing's), on short timers: the watchdog over a child stuck in a tool call, check-ins
 // (across a restart too), the cap queueing thread_start, and reports (with a real git repository for a child's branch)
-// kept past the child's archive until dismissed from the board. `superego extension test --user -P chief-of-staff`.
+// kept past the child's archive until dismissed from the board, or cleared with the rest once a programme's done.
+// `superego extension test --user -P chief-of-staff`.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
@@ -321,3 +322,62 @@ it("places lanes by id: a thread's, and a queued start's, which becomes its thre
   await watched.until((x) => x.plan?.waves[0]?.lanes[1] === b.id, "B's lane its thread's")
   expect(watched.value.plan!.waves.map((w) => w.lanes)).toEqual([[a!.id, b.id], ['A', 'Sound']])
 }, 30_000)
+
+it("clears the board once a programme's done: settled reports, answered decisions and the plan; not what runs, asks or waits", async () => {
+  await up({ tickMs: 100, cap: 0 }, [
+    // The lead lays out a programme, asks twice, and queues a start (cap 0: it waits for good).
+    callTool('board_plan', { title: 'Polish', summary: 'Under way.', waves: [{ title: 'One', lanes: ['A'] }] }),
+    callTool('board_ask', { question: 'Still open?', options: ['Yes', 'No'] }),
+    callTool('board_ask', { question: 'Answered?', options: ['Yes', 'No'] }),
+    callTool('thread_start', { prompt: 'Later', title: 'Later' }),
+    say('Set.'),
+    // The lead told the answer; then each child in turn, the last one twice (its second turn in a long call).
+    say('Noted.'), say('Done here.'), say('Gone too.'), say('First pass.'), callTool('bash', { command: 'sleep 4' }), say('Second pass.'),
+    // The lead clears what's left once the last child is done.
+    callTool('board_clear', {}), say('Cleared.'),
+  ])
+  const lead = await daemon!.thread('Set it up', { title: 'Lead' })
+  const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
+  await watched.until((b) => b.decisions.length === 2 && Boolean(b.plan) && b.queued.length === 1, 'the programme on the board')
+  const [open, answered] = watched.value.decisions
+  await daemon!.dispatch('staff.decide', { id: lead.id, decision: answered!.id, text: 'Yes' })
+  await daemon!.until(async () => (await daemon!.transcript(lead.id)).includes('Noted.'), 'the lead told')
+  await daemon!.idle(lead.id)
+
+  // One finished, one finished and archived, one reported and at work again.
+  const done = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Done', prompt: 'Do it' })
+  await daemon!.idle(done.id)
+  const gone = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Gone', prompt: 'Do it' })
+  await daemon!.idle(gone.id)
+  const busy = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Busy', prompt: 'Do it' })
+  await daemon!.idle(busy.id)
+  await watched.until((b) => b.reports.length === 3, 'all three reported')
+  await daemon!.dispatch('thread.archive', { thread: gone.id })
+  // (send waits for the turn: not awaited till Busy's done.)
+  const again = daemon!.send(busy.id, 'Again')
+  await daemon!.until(async () => (await childrenOf(lead.id)).find((c) => c.id === busy.id)?.status.state === 'working', 'Busy at work')
+
+  // Cleared from the board with X: only the working child's report, the open decision and the queued start stay.
+  window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
+  const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
+  await window.until(() => pane.text().includes('Polish'), 'the board')
+  expect((pane.find('button[title^="Settled reports"]') as HTMLButtonElement).disabled).toBe(false)
+  pane.find('.staff-board')!.focus()
+  await window.key('shift+x')
+  await watched.until((b) => !b.plan && b.decisions.length === 1 && b.reports.length === 1, 'cleared')
+  expect(watched.value.reports[0]!.id).toBe(busy.id)
+  expect(watched.value.decisions[0]!.id).toBe(open!.id)
+  expect(watched.value.queued).toHaveLength(1)
+  await window.until(() => !pane.text().includes('Polish'), 'the plan gone from the board')
+  expect((pane.find('button[title^="Settled reports"]') as HTMLButtonElement).disabled).toBe(true)
+
+  // Busy done: the lead clears its report; the open decision and the queued start still stay.
+  await again
+  await watched.until((b) => b.reports[0]?.answer === 'Second pass.', "Busy's new report")
+  await daemon!.send(lead.id, 'Clear the board')
+  await daemon!.until(async () => (await daemon!.transcript(lead.id)).includes('Cleared.'), 'the lead cleared it')
+  expect(await daemon!.transcript(lead.id)).toContain('Cleared 1 report from the board.')
+  await watched.until((b) => b.reports.length === 0, "Busy's report cleared")
+  expect(watched.value.decisions.map((d) => d.id)).toEqual([open!.id])
+  expect(watched.value.queued).toHaveLength(1)
+}, 40_000)
