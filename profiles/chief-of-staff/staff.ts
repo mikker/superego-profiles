@@ -1,39 +1,51 @@
-// The chief of staff's machinery, for threads with this profile (its "leads"): a watchdog over their children, check-ins
-// they schedule for themselves, a cap on how many children run at once (thread_start beyond it queues the start), and
-// what the board pane shows: each child's changes, its reports (kept until the user dismisses them), the programme as the
-// lead lays it out (board_plan), and the decisions it puts to the user (board_ask), answered on the board; what's settled
-// of it all is cleared at once when a programme's done (staff.clear, board_clear). One timer, owned by the extension and
-// gone with it; what must survive a restart (check-ins, queued starts, reports, the plan, decisions) is kept in each
-// lead's state.
+// The chief of staff's machinery, for threads with this profile (its "leads"):
+// - owns the worker boundary (lane_start, lane_send, lane_read, lane_list, lane_archive) instead of wrapping raw
+//   thread-tools; workers start with the `chief-of-staff-worker` profile (no thread-tools) so siblings cannot
+//   thread_send each other;
+// - single-slot held mailbox per working lane: lane_send on a working child never piles follow-ups into its inbox;
+//   notes are held/coalesced in lead state and delivered as one message when the lane goes idle (or dropped on the
+//   board or via lane_drop_note);
+// - watchdog over working children, live tool activity, branch changes, reports kept until dismissed, plan & decisions.
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
-  arr, defineAction, defineDaemonExtension, defineExtension, defineTool, num, obj, opt, RpcError, str, union, wrapTool,
+  arr, bool, defineAction, defineDaemonExtension, defineExtension, defineTool, obj, opt, RpcError, str, union,
   type ThreadInfo,
 } from 'superego'
-import { about, BOARD, EMPTY_BOARD, type Board, type Changes, type Decision, type Details, type Plan, type Report } from './shared.ts'
+import {
+  about, BOARD, EMPTY_BOARD, type Board, type Changes, type Decision, type Details, type HeldNote, type Plan, type Report,
+} from './shared.ts'
 
 const PROFILE = 'chief-of-staff'
+const WORKER_PROFILE = 'chief-of-staff-worker'
 const MINUTE = 60_000
+const ANSWER_CLIP = 6_000
+const REPORT_ANSWER = 4_000
 
 type Start = { prompt: string; title?: string; cwd?: string; profile?: string; worktree?: boolean }
-type CheckIn = { at: number; note: string }
 /** A start waiting for a slot. `id`, to name it in the plan's lanes until it starts (older ones have none). */
 type Queued = { args: Start; at: number; id?: string }
 /** `reported`: by child, the activity (activeAt) its last report was of, so each is recorded once, dismissed or not. */
 type State = {
-  checkIns?: CheckIn[]; queue?: Queued[]; reports?: Report[]; reported?: Record<string, number>; plan?: Plan; decisions?: Decision[]
+  queue?: Queued[]
+  held?: Record<string, HeldNote>
+  reports?: Report[]
+  reported?: Record<string, number>
+  plan?: Plan
+  decisions?: Decision[]
 }
 /** A thread's worktree, as the worktrees extension tells it (`facts.worktrees`). */
 type Worktree = { path: string; branch: string; removed?: boolean }
 
 export type StaffOptions = {
-  /** How often it looks: the watchdog, due check-ins and the queue. */
+  /** How often it looks: the watchdog, due check-ins, live activity and the queue. */
   tickMs?: number
   /** A working child with no new transcript entry for this long is stalled. */
   stallMs?: number
-  /** Children running at once, before thread_start queues. */
+  /** Children running at once, before lane_start queues. */
   cap?: number
+  /** Default profile for started workers (`chief-of-staff-worker`; override in tests where only one profile exists). */
+  workerProfile?: string | null
 }
 
 const text = (value: string) => ({ output: [{ type: 'text' as const, text: value }] })
@@ -92,7 +104,6 @@ async function changesOf(at: string, branch: string): Promise<Changes | undefine
   return { files: files.slice(0, FILES), added: sum('added'), removed: sum('removed'), ...(files.length > FILES ? { more: files.length - FILES } : {}) }
 }
 
-const ANSWER = 4_000
 /** How a child stands as a report, if it's one: it answered, failed, or waits on a question. Not while it works or signs in. */
 function outcomeOf(t: ThreadInfo, now: number): Report['outcome'] | undefined {
   const { state, kind } = t.status
@@ -120,7 +131,7 @@ function callOf(entries: readonly Entry[]) {
   return undefined
 }
 
-export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: StaffOptions = {}) {
+export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerProfile = WORKER_PROFILE }: StaffOptions = {}) {
   return defineDaemonExtension({
     ...about,
     setup(superego) {
@@ -156,23 +167,34 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
         const tree = branchOf(child)
         const [changed, merged] = tree ? await Promise.all([changes(child), mergedOf(child)]) : []
         return {
-          id: child.id, title: child.title, at, outcome, answer: (answer ?? '').trim().slice(0, ANSWER),
+          id: child.id, title: child.title, at, outcome, answer: (answer ?? '').trim().slice(0, REPORT_ANSWER),
           ...(tree ? { branch: tree.branch } : {}), ...(changed ? { changes: changed } : {}), ...(merged !== undefined ? { merged } : {}),
         }
       }
 
-      /** What the board shows straight from a lead's state: its reports, plan and decisions. */
-      const kept = (s: State | undefined) => ({ reports: s?.reports ?? [], decisions: s?.decisions ?? [], ...(s?.plan ? { plan: s.plan } : {}) })
+      /** What the board shows straight from a lead's state: held notes, reports, plan and decisions. */
+      const kept = (s: State | undefined) => ({
+        held: s?.held ?? {},
+        reports: s?.reports ?? [],
+        decisions: s?.decisions ?? [],
+        ...(s?.plan ? { plan: s.plan } : {}),
+      })
       /** Change a lead's state, and its board with it at once rather than on the next tick. */
       async function keep(lead: string, edit: (s: State) => State) {
         await state.update(lead, (s) => edit(s ?? {}))
         const next = await state.get(lead)
-        board.update(lead, (b) => ({ ...(b ?? EMPTY_BOARD), ...kept(next) }))
+        board.update(lead, (b) => ({
+          ...(b ?? EMPTY_BOARD),
+          queued: (next?.queue ?? []).map((q) => ({ ...(q.id ? { id: q.id } : {}), title: q.args.title ?? q.args.prompt.slice(0, 60), at: q.at })),
+          ...kept(next),
+        }))
         return next
       }
+
       /**
        * Clear a lead's board once a programme's done: the reports of children done with (finished, failed or archived),
-       * the answered decisions and the plan. Running children (stalled or asking too), open decisions and queued starts stay.
+       * the answered decisions and the plan. Running children (stalled or asking too), open decisions, held notes on
+       * running children, and queued starts stay.
        */
       async function clear(lead: string) {
         const at = Date.now()
@@ -186,17 +208,30 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
         })
         return cleared
       }
+
       /** The lead of the thread a tool call is in. */
       const leadOf = (conversationId: number) => {
         const id = threadOf(conversationId)
-        if (!id) throw new Error('Only a thread can use the board')
+        if (!id) throw new Error('Only a thread can use chief-of-staff tools')
         return id
       }
 
-      async function start(lead: ThreadInfo, { worktree, ...args }: Start) {
-        // A worktree is asked of the worktrees extension by name.
+      async function startWorker(lead: ThreadInfo, { worktree, profile, ...args }: Start) {
         const options = worktree !== undefined ? { options: { worktrees: worktree } } : {}
-        return await superego.threads.start({ ...args, cwd: args.cwd ?? lead.cwd, parent: lead.id, ...options })
+        const chosenProfile = profile ?? (workerProfile ?? undefined)
+        return await superego.threads.start({
+          ...args,
+          cwd: args.cwd ?? lead.cwd,
+          parent: lead.id,
+          ...(chosenProfile ? { profile: chosenProfile } : {}),
+          ...options,
+        })
+      }
+
+      /** Send a single signed message from `lead` to `child`. */
+      async function sendToChild(lead: ThreadInfo, childId: string, body: string) {
+        const signed = `From ${linkTo(lead)}:\n\n${body.trim()}`
+        await superego.threads.send(childId, signed, { whenBusy: 'followUp', from: lead.id })
       }
 
       async function tick() {
@@ -213,40 +248,69 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
 
         async function tickLead(lead: ThreadInfo) {
           const children = all.filter((t) => t.parent === lead.id && !t.archived)
+          const liveIds = new Set(children.map((c) => c.id))
           let mine = (await state.get(lead.id)) ?? {}
           const notes: string[] = []
 
-          // Check-ins that are due.
-          const due = (mine.checkIns ?? []).filter((c) => c.at <= at)
-          if (due.length) {
-            await state.update(lead.id, (s) => ({ ...s, checkIns: (s?.checkIns ?? []).filter((c) => c.at > at) }))
-            notes.push(...due.map((c) => `Check-in: ${c.note}`))
-          }
-
-          // The watchdog: a working child with nothing new for too long. Reported once per stall; never stopped.
+          // Live activity + watchdog for every working child.
+          const activity: Board['activity'] = {}
           const stalled: Board['stalled'] = {}
           for (const child of children) {
-            if (child.status.state !== 'working' || at - child.activeAt < stallMs) { warned.delete(child.id); continue }
+            if (child.status.state !== 'working') {
+              warned.delete(child.id)
+              continue
+            }
             const call = callOf(await superego.threads.entries(child.id, 10).catch(() => []) as unknown as Entry[])
+            if (call) activity[child.id] = call
+            if (at - child.activeAt < stallMs) {
+              warned.delete(child.id)
+              continue
+            }
             stalled[child.id] = { since: child.activeAt, ...(call ? { call } : {}) }
             if (warned.get(child.id) === child.activeAt) continue
             warned.set(child.id, child.activeAt)
             notes.push(`Watchdog: ${linkTo(child)} has made no progress for ${minutes(at - child.activeAt)}${call ? `, in ${call}` : ''}.`)
           }
 
-          // Reports: a child that answered, failed or came to wait on a question since it was last reported. Seen on the
-          // tick, as thread-reports tells the lead; kept (one a child, the newest) until the user dismisses it.
+          // Held notes: drop notes for archived/gone children; deliver held note once a child is idle/done/error.
+          if (mine.held && Object.keys(mine.held).length) {
+            const heldEntries = Object.entries(mine.held)
+            for (const [childId, held] of heldEntries) {
+              const child = children.find((c) => c.id === childId)
+              if (!child) {
+                await state.update(lead.id, (s) => {
+                  if (!s?.held?.[childId]) return s ?? {}
+                  const { [childId]: _, ...rest } = s.held
+                  return { ...s, held: rest }
+                })
+                continue
+              }
+              if (child.status.state === 'working' || child.status.state === 'blocked') continue
+              // Child is settled: clear held slot first, then send the single coalesced note.
+              await state.update(lead.id, (s) => {
+                if (!s?.held?.[childId]) return s ?? {}
+                const { [childId]: _, ...rest } = s.held
+                return { ...s, held: rest }
+              })
+              try {
+                await sendToChild(lead, child.id, held.text)
+              } catch (error) {
+                notes.push(`Couldn't deliver held note to ${linkTo(child)}: ${error instanceof Error ? error.message : String(error)}`)
+              }
+            }
+            mine = (await state.get(lead.id)) ?? {}
+          }
+
+          // Reports: a child that answered, failed or came to wait on a question since it was last reported.
           for (const child of children) {
             const outcome = outcomeOf(child, at)
             if (!outcome || (mine.reported?.[child.id] ?? -1) >= child.activeAt) continue
             const report = await reportOf(child, outcome, at)
             if (!report) continue
-            const live = new Set(children.map((c) => c.id))
             await state.update(lead.id, (s) => ({
               ...s,
               reports: [report, ...(s?.reports ?? []).filter((r) => r.id !== child.id)],
-              // Archived children won't report again: forget them.
-              reported: Object.fromEntries([...Object.entries(s?.reported ?? {}).filter(([id]) => live.has(id)), [child.id, child.activeAt]]),
+              reported: Object.fromEntries([...Object.entries(s?.reported ?? {}).filter(([id]) => liveIds.has(id)), [child.id, child.activeAt]]),
             }))
             mine = (await state.get(lead.id)) ?? {}
           }
@@ -266,7 +330,7 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
             await state.update(lead.id, (s) => ({ ...s, queue: rest }))
             mine = { ...mine, queue: rest }
             try {
-              const child = await start(lead, next!.args)
+              const child = await startWorker(lead, next!.args)
               // Its lane in the plan, named by its queue id, is the thread's now.
               if (next!.id && mine.plan?.waves.some((w) => w.lanes.includes(next!.id!))) {
                 await state.update(lead.id, (s) => ({
@@ -281,11 +345,14 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
           }
 
           if (superego.signal.aborted) return
-          // Read again: a decision or plan may have come since, and the board shouldn't lose it until the next tick.
+          // Read again: a decision, plan, or held note may have come since, and the board shouldn't lose it until the next tick.
           mine = (await state.get(lead.id)) ?? {}
           board.set(lead.id, {
-            stalled, queued: (mine.queue ?? []).map((q) => ({ ...(q.id ? { id: q.id } : {}), title: q.args.title ?? q.args.prompt.slice(0, 60), at: q.at })),
-            changes: changed, ...kept(mine),
+            activity,
+            stalled,
+            queued: (mine.queue ?? []).map((q) => ({ ...(q.id ? { id: q.id } : {}), title: q.args.title ?? q.args.prompt.slice(0, 60), at: q.at })),
+            changes: changed,
+            ...kept(mine),
           })
           if (notes.length) await tell(lead.id, notes.join('\n\n'))
         }
@@ -302,39 +369,184 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
       const first = setTimeout(poke, 0)
       superego.signal.addEventListener('abort', () => { clearInterval(timer); clearTimeout(first) })
 
+      // Poke promptly when a lead's turn ends or a thread is archived, so queues/held notes react quickly.
+      superego.thread({
+        turnEnd() { void poke() },
+        archived() { void poke() },
+        blocked() { void poke() },
+      })
+
       superego.agent(defineExtension({
         name: 'staff',
-        tools: [...boardTools(), defineTool({
-          name: 'check_in',
-          description: 'Schedule a message to this thread, "Check-in: <note>", in `minutes`: to look at running work later instead of ' +
-            'blocking on thread_read (wait: true). It survives a restart.',
-          parameters: obj({ minutes: num({ minimum: 0 }), note: str({ minLength: 1 }) }),
-          async execute({ minutes: after, note }, api) {
-            const id = threadOf(api.conversationId)
-            if (!id) throw new Error('Only a thread can check in')
-            const at = Date.now() + after * MINUTE
-            await state.update(id, (s) => ({ ...s, checkIns: [...(s?.checkIns ?? []), { at, note }] }))
-            return text(`Check-in set for ${new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`)
-          },
-        })],
-        // thread_start beyond the cap queues the start; it's made when a child finishes.
-        wraps: [wrapTool({ name: 'thread_start' } as never, (tool: any) => ({
-          ...tool,
-          async execute(args: Start, api: { conversationId: number }, context: unknown) {
-            const id = threadOf(api.conversationId)
-            const all = id ? await superego.threads.list() : []
-            const lead = all.find((t) => t.id === id)
-            const busy = lead ? all.filter((t) => t.parent === lead.id && running(t, Date.now())).length : 0
-            const queued = lead ? ((await state.get(lead.id))?.queue ?? []).length : 0
-            if (!lead || (busy < cap && !queued)) return tool.execute(args, api, context)
-            const queueId = `queued-${randomUUID().slice(0, 6)}`
-            await state.update(lead.id, (s) => ({ ...s, queue: [...(s?.queue ?? []), { args, at: Date.now(), id: queueId }] }))
-            void poke()
-            return text(`Queued as ${queueId} (${busy} running${queued ? `, ${queued} queued before it` : ''}): it starts when a slot frees up, and you'll be told. ` +
-              `Name it ${queueId} in board_plan's lanes; once it starts, its lane is its thread's.`)
-          },
-        }))],
+        tools: [...laneTools(), ...boardTools()],
       }))
+
+      /** First-class worker tools owned by chief-of-staff (replaces raw thread-tools). */
+      function laneTools() {
+        return [
+          defineTool({
+            name: 'lane_start',
+            description: 'Start a worker lane (child thread). Beyond the concurrency cap, queues the start and returns a queue id ' +
+              'to place in board_plan. Workers run without peer thread_send so all coordination flows through you.',
+            executionMode: 'sequential',
+            parameters: obj({
+              prompt: str({ minLength: 1 }),
+              title: opt(str()),
+              cwd: opt(str()),
+              worktree: opt(bool()),
+              profile: opt(str()),
+            }),
+            async execute(args: Start, api) {
+              const id = leadOf(api.conversationId)
+              const all = await superego.threads.list()
+              const lead = all.find((t) => t.id === id)
+              if (!lead) throw new Error(`Lead thread ${id} not found`)
+              const busy = all.filter((t) => t.parent === lead.id && running(t, Date.now())).length
+              const queued = ((await state.get(lead.id))?.queue ?? []).length
+              if (busy < cap && !queued) {
+                const child = await startWorker(lead, args)
+                void poke()
+                return text(`Started ${linkTo(child)} (id ${child.id}).`)
+              }
+              const queueId = `queued-${randomUUID().slice(0, 6)}`
+              await keep(lead.id, (s) => ({ ...s, queue: [...(s.queue ?? []), { args, at: Date.now(), id: queueId }] }))
+              void poke()
+              return text(`Queued as ${queueId} (${busy} running${queued ? `, ${queued} queued before it` : ''}): it starts when a slot frees up, and you'll be told. ` +
+                `Name it ${queueId} in board_plan's lanes; once it starts, its lane is its thread's.`)
+            },
+          }),
+          defineTool({
+            name: 'lane_send',
+            description: 'Send a follow-up to a lane. If the lane is idle/done/errored, sends immediately. ' +
+              'If it is working or waiting on the user, holds a single coalesced note in staff state (never stacking its inbox) ' +
+              'and delivers it as one message once the lane finishes. Set replace: true to supersede an earlier held note.',
+            parameters: obj({
+              thread: str({ minLength: 1 }),
+              text: str({ minLength: 1 }),
+              replace: opt(bool()),
+            }),
+            async execute({ thread: childId, text: body, replace }, api) {
+              const id = leadOf(api.conversationId)
+              const lead = await superego.threads.get(id)
+              const child = await superego.threads.get(childId)
+              if (child.archived) throw new Error(`${linkTo(child)} is archived; unarchive it before sending.`)
+
+              // Settled: deliver straight away (and clear any stale held note).
+              if (child.status.state !== 'working' && child.status.state !== 'blocked') {
+                await keep(id, (s) => {
+                  if (!s.held?.[childId]) return s
+                  const { [childId]: _, ...rest } = s.held
+                  return { ...s, held: rest }
+                })
+                await sendToChild(lead, child.id, body)
+                void poke()
+                return text(`Sent to ${linkTo(child)}.`)
+              }
+
+              // Busy or blocked: coalesce into a single held note instead of piling into the child's inbox.
+              const now = Date.now()
+              let held!: HeldNote
+              await keep(id, (s) => {
+                const prev = s.held?.[childId]
+                const combined = !prev || replace ? body.trim() : `${prev.text}\n\n---\n\n${body.trim()}`
+                held = { text: combined, at: now, count: !prev || replace ? 1 : prev.count + 1 }
+                return { ...s, held: { ...(s.held ?? {}), [childId]: held } }
+              })
+              const call = child.status.state === 'working'
+                ? callOf(await superego.threads.entries(child.id, 10).catch(() => []) as unknown as Entry[])
+                : undefined
+              const doing = child.status.state === 'blocked'
+                ? 'is waiting on the user'
+                : `is still working (last active ${minutes(now - child.activeAt)} ago${call ? `, in ${call}` : ''})`
+              const noteStatus = held.count === 1
+                ? (replace ? 'Replaced the held note' : 'Held your note')
+                : `Merged into the single held note (${held.count} combined)`
+              return text(`${linkTo(child)} ${doing}. ${noteStatus} — it will be delivered as one message when the lane finishes. ` +
+                'No need to send again; use lane_drop_note to cancel it, or lane_send with replace: true to supersede it.')
+            },
+          }),
+          defineTool({
+            name: 'lane_drop_note',
+            description: 'Cancel a held follow-up note for a working lane before it is delivered.',
+            parameters: obj({ thread: str({ minLength: 1 }) }),
+            async execute({ thread: childId }, api) {
+              const id = leadOf(api.conversationId)
+              const had = Boolean((await state.get(id))?.held?.[childId])
+              if (!had) return text(`No held note for ${childId}.`)
+              await keep(id, (s) => {
+                const { [childId]: _, ...rest } = s.held ?? {}
+                return { ...s, held: rest }
+              })
+              return text(`Dropped the held note for ${childId}.`)
+            },
+          }),
+          defineTool({
+            name: 'lane_read',
+            description: 'Read a lane’s status, folder, current tool call (if working), any held note, and last answer. Never blocks.',
+            parameters: obj({ thread: str({ minLength: 1 }) }),
+            async execute({ thread: childId }, api) {
+              const id = leadOf(api.conversationId)
+              const child = await superego.threads.get(childId)
+              const answer = await answerOf(child.id)
+              await superego.threads.noteRead(id, child)
+              const call = child.status.state === 'working'
+                ? callOf(await superego.threads.entries(child.id, 10).catch(() => []) as unknown as Entry[])
+                : undefined
+              const held = (await state.get(id))?.held?.[child.id]
+              const lines = [
+                `${linkTo(child)} (id ${child.id}): ${child.status.state}${child.status.msg ? ` — ${child.status.msg}` : ''}`,
+                `Folder: ${child.cwd}`,
+                ...(call ? [`Current tool: ${call}`] : []),
+                ...(held ? [`Held note (${held.count}): ${held.text}`] : []),
+                '',
+                answer ? answer.slice(0, ANSWER_CLIP) : '(no answer yet)',
+              ]
+              return text(lines.join('\n'))
+            },
+          }),
+          defineTool({
+            name: 'lane_list',
+            description: 'List this lead’s lanes (running, idle, queued) with status, folder, and any held note.',
+            parameters: obj({}),
+            async execute(_, api) {
+              const id = leadOf(api.conversationId)
+              const all = await superego.threads.list()
+              const mine = (await state.get(id)) ?? {}
+              const children = all.filter((t) => t.parent === id && !t.archived)
+              const lines: string[] = []
+              for (const c of children) {
+                const held = mine.held?.[c.id]
+                lines.push(`- ${linkTo(c)} (id ${c.id}): ${c.status.state}, ${c.cwd}${held ? ` [held note ×${held.count}]` : ''}`)
+              }
+              for (const q of mine.queue ?? []) {
+                lines.push(`- ${q.args.title ?? q.args.prompt.slice(0, 60)} (${q.id ?? 'queued'}): queued`)
+              }
+              return text(lines.length ? lines.join('\n') : 'No active or queued lanes.')
+            },
+          }),
+          defineTool({
+            name: 'lane_archive',
+            description: 'Archive a finished lane (and remove its clean worktree). Refuses a working or blocked lane.',
+            parameters: obj({ thread: str({ minLength: 1 }) }),
+            async execute({ thread: childId }, api) {
+              const id = leadOf(api.conversationId)
+              const child = await superego.threads.get(childId)
+              if (child.status.state === 'working' || child.status.state === 'blocked') {
+                throw new Error(`Cannot archive ${linkTo(child)} while it is ${child.status.state}.`)
+              }
+              const { notes } = await superego.threads.archive(child.id)
+              await keep(id, (s) => {
+                if (!s.held?.[child.id]) return s
+                const { [child.id]: _, ...rest } = s.held
+                return { ...s, held: rest }
+              })
+              void poke()
+              const extra = Object.values(notes).filter(Boolean).join('; ')
+              return text(`Archived ${linkTo(child)}.${extra ? ` ${extra}` : ''}`)
+            },
+          }),
+        ]
+      }
 
       // Each live child's last answer in a line, and whether its branch is merged; the merges of reported ones, archived too.
       superego.method('staff.details', async ({ id }): Promise<Details[]> => {
@@ -347,6 +559,20 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4 }: Staff
           return { id: child.id, answer: answer?.split('\n').find((l) => l.trim())?.slice(0, 160) ?? null, merged: merged ?? null }
         }))
       }, { params: obj({ id: str() }) })
+
+      // Drop a held follow-up note from the board (or CLI).
+      superego.action(defineAction({
+        id: 'staff.dropNote', title: 'Drop a held follow-up note for a lane', expose: ['ui', 'cli'],
+        params: obj({ id: str(), child: str() }),
+        async run({ id, child }) {
+          await keep(id, (s) => {
+            if (!s.held?.[child]) return s
+            const { [child]: _, ...rest } = s.held
+            return { ...s, held: rest }
+          })
+          return null
+        },
+      }))
 
       // The user's done with a report or an answered decision (or, with neither, all of a lead's reports and answered
       // decisions): off the board, and out of its state.

@@ -1,14 +1,14 @@
 // What staff is, for both halves (spread into each), and what they share: the board's value and its shapes.
 export const about = {
-  name: 'staff', api: '^4 || ^5', title: 'Chief of staff',
+  name: 'staff', api: '^5', title: 'Chief of staff',
   panes: {
-    'staff-board': "the user's overview of this thread's work: the programme's waves (board_plan), what needs the user " +
-      "(decisions from board_ask, children's questions, stalls), each child's progress and changes, queued starts, and " +
-      'what landed; no params',
+    'staff-board': "the user's triage overview of this thread's work: wave progress, what needs the user " +
+      "(decisions from board_ask, children's questions, stalls, failures), in-flight lanes with live activity and " +
+      'held notes, ready-to-land lanes, and what landed; no params',
   },
 }
 
-/** What the board shows besides what the window knows of threads, scoped by lead: stalls, queued starts, changes, reports. */
+/** What the board shows besides what the window knows of threads, scoped by lead. */
 export const BOARD = 'staff.board'
 /** The board pane's kind. */
 export const PANE = 'staff-board'
@@ -40,15 +40,24 @@ export type Decision = {
  */
 export type Plan = { title?: string; summary?: string; waves: { title: string; lanes: string[] }[]; at: number }
 
+/** A single held follow-up note for a working child, delivered as one message when the child goes idle (or dropped). */
+export type HeldNote = { text: string; at: number; count: number }
+
 /**
- * One lead's board: its stalled children (since when, in which call), queued starts, each child's changes, its reports,
- * its plan and decisions.
+ * One lead's board: what each working child is doing right now, stalled children, held follow-up notes per child,
+ * queued starts, each child's changes, its reports, its plan and decisions.
  */
 export type Board = {
-  stalled: Record<string, { since: number; call?: string }>; queued: { id?: string; title: string; at: number }[]
-  changes: Record<string, Changes>; reports: Report[]; plan?: Plan; decisions: Decision[]
+  activity: Record<string, string>
+  stalled: Record<string, { since: number; call?: string }>
+  held: Record<string, HeldNote>
+  queued: { id?: string; title: string; at: number }[]
+  changes: Record<string, Changes>
+  reports: Report[]
+  plan?: Plan
+  decisions: Decision[]
 }
-export const EMPTY_BOARD: Board = { stalled: {}, queued: [], changes: {}, reports: [], decisions: [] }
+export const EMPTY_BOARD: Board = { activity: {}, stalled: {}, held: {}, queued: [], changes: {}, reports: [], decisions: [] }
 
 /** What a child's agent waits on, as agent-ui publishes it in the child's scope: an ask_user's question, or an ask_ui's blocks. */
 export type Waiting = { id: string; thread: string; at: number; tool: string; question?: string; options?: Option[]; title?: string }

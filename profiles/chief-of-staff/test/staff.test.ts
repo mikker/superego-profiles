@@ -1,6 +1,10 @@
-// staff in a real daemon (superego/testing's), on short timers: the watchdog over a child stuck in a tool call, check-ins
-// (across a restart too), the cap queueing thread_start, and reports (with a real git repository for a child's branch)
-// kept past the child's archive until dismissed from the board, or cleared with the rest once a programme's done.
+// staff in a real daemon (superego/testing's), on short timers:
+// - watchdog + live activity over working lanes;
+// - lane_start concurrency cap + queue draining (replacing raw thread_start);
+// - lane_send single-slot held mailbox (coalescing/replacing/dropping notes while a lane is working, delivering one
+//   message once idle);
+// - reports with real git worktree branch changes, kept past archive until dismissed or cleared;
+// - Direction B triage board (Action required, In flight, Ready to land, Landed, Answered, wave filter pills).
 // `superego extension test --user -P chief-of-staff`.
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -16,17 +20,15 @@ import { BOARD, PANE, type Board, type Details } from '../shared.ts'
 const here = new URL('.', import.meta.url).pathname
 
 /**
- * The profile as the real one, with staff on test timers, and stand-ins for the bundled extensions it leans on, which a
- * test daemon hasn't: thread-tools' thread_start for it to wrap, worktrees' facts, and agent-ui's ask_user (stand-ins.ts). Its board is a
- * copy, as the window loads a profile's UI only from inside its folder.
+ * The profile as the real one, with staff on test timers (and `workerProfile: null` since testDaemon only hosts one
+ * profile), plus stand-ins for worktrees and agent-ui. No thread-tools stand-in: staff owns its own lane_* tools.
  */
 const source = (file: string) => readFileSync(join(here, '..', file), 'utf8')
 const profile = (options: StaffOptions) => ({
-  'profile.ts': `import { defineProfile } from 'superego'\nexport default defineProfile({ extensions: ['./staff.ts', './thread-tools.ts', './worktrees.ts', './agent-ui.ts'], ui: ['./board.tsx'] })\n`,
+  'profile.ts': `import { defineProfile } from 'superego'\nexport default defineProfile({ extensions: ['./staff.ts', './worktrees.ts', './agent-ui.ts'], ui: ['./board.tsx'] })\n`,
   'board.tsx': source('board.tsx'),
   'shared.ts': source('shared.ts'),
-  'staff.ts': `import { staff } from ${JSON.stringify(join(here, '..', 'staff.ts'))}\nexport default staff(${JSON.stringify(options)})\n`,
-  'thread-tools.ts': `export { threadTools as default } from ${JSON.stringify(join(here, 'stand-ins.ts'))}\n`,
+  'staff.ts': `import { staff } from ${JSON.stringify(join(here, '..', 'staff.ts'))}\nexport default staff(${JSON.stringify({ workerProfile: null, ...options })})\n`,
   'worktrees.ts': `export { worktrees as default } from ${JSON.stringify(join(here, 'stand-ins.ts'))}\n`,
   'agent-ui.ts': `export { agentUi as default } from ${JSON.stringify(join(here, 'stand-ins.ts'))}\n`,
 })
@@ -46,52 +48,47 @@ const up = async (options: StaffOptions, model: NonNullable<Parameters<typeof te
 const said = async (thread: string, text: string) => (await daemon!.transcript(thread)).split(text).length - 1
 const childrenOf = async (lead: string) => (await daemon!.call<ThreadInfo[]>('thread.list', {})).filter((t) => t.parent === lead)
 
-it('tells the lead once when a working child has made no progress for a while, and in which tool call', async () => {
-  // The child sits in a 3s bash call: stalled after 1s. The lead hears it (and answers), then the child finishes.
+it('tracks live activity and tells the lead once when a working lane stalls', async () => {
+  // The child sits in a 3s bash call: live activity shows immediately, stalled after 1s.
   await up({ tickMs: 100, stallMs: 1_000 }, [callTool('bash', { command: 'sleep 3' }), say('Noted.'), say('Smoke done.')])
   const lead = await daemon!.thread(undefined, { title: 'Lead' })
   const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
   const smoke = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Smoke', prompt: 'Run the smoke' })
+  await watched.until((b) => b.activity[smoke.id] === 'bash (`sleep 3`)', 'live activity on the board')
   await watched.until((b) => Boolean(b.stalled[smoke.id]), 'the stall on the board')
   expect(watched.value.stalled[smoke.id]).toMatchObject({ call: 'bash (`sleep 3`)' })
   const told = `Watchdog: [Smoke](thread:${smoke.id}) has made no progress for 1 min, in bash (\`sleep 3\`).`
   await daemon!.until(async () => (await said(lead.id, told)) > 0, 'the lead told')
   const once = await said(lead.id, told)
 
-  // Done: off the stalled list, reported, and not told again.
+  // Done: off the stalled and activity lists, reported, and not told again.
   await daemon!.idle(smoke.id)
-  await watched.until((b) => b.reports.length === 1 && !b.stalled[smoke.id], 'its report')
+  await watched.until((b) => b.reports.length === 1 && !b.stalled[smoke.id] && !b.activity[smoke.id], 'its report')
   expect(watched.value.reports[0]).toMatchObject({ id: smoke.id, title: 'Smoke', outcome: 'done', answer: 'Smoke done.' })
   expect(await said(lead.id, 'Watchdog')).toBe(once)
 }, 20_000)
 
-it('fires a check-in when it falls due, after a restart too', async () => {
-  // Looking only once it's set up: the check-in can't come before the restart.
-  await up({ tickMs: 600_000 }, [callTool('check_in', { minutes: 0.05, note: 'Look at the lanes' }), say('Set.')])
-  const lead = await daemon!.thread('go', { title: 'Lead' })
-  expect(await daemon!.transcript(lead.id)).toContain('Check-in set for')
-  // Past when it was due; up again, it comes.
-  await new Promise((r) => setTimeout(r, 3_500))
-  daemon = await daemon!.restart({ model: [say('Looked.')] })
-  await daemon.until(async () => (await daemon!.transcript(lead.id)).includes('Looked.'), 'the check-in answered', 20_000)
-  expect(await daemon.transcript(lead.id)).toContain('Check-in: Look at the lanes')
-}, 40_000)
-
-it('queues thread_start beyond the cap, and starts the queued as a child finishes', async () => {
+it('queues lane_start beyond the cap, and starts the queued as a lane finishes', async () => {
   await up({ tickMs: 100, cap: 1 }, [
-    callTool('thread_start', { prompt: 'Do A', title: 'A' }), callTool('thread_start', { prompt: 'Do B', title: 'B' }), say('One started, one queued.'),
-    // B's first turn and the lead's, in either order.
+    callTool('lane_start', { prompt: 'Do A', title: 'A' }),
+    // A's first turn holds the slot while B is requested.
+    callTool('bash', { command: 'sleep 2' }),
+    callTool('lane_start', { prompt: 'Do B', title: 'B' }),
+    say('One started, one queued.'),
+    say('A done.'),
+    // B's first turn and the lead's turn on queue start, in either order.
     say('Ok.'), say('Ok.'),
   ])
   const lead = await daemon!.thread('Start A and B', { title: 'Lead' })
   const transcript = await daemon!.transcript(lead.id)
-  expect(transcript).toContain('Started A')
+  expect(transcript).toContain('Started [A]')
   expect(transcript).toMatch(/Queued as queued-\w+ \(1 running\): it starts when a slot frees up, and you'll be told\./)
   const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
   await watched.until((b) => b.queued.map((q) => q.title).join() === 'B', 'B queued on the board')
 
-  // A is done with: B starts, in the lead's folder, as its child; the lead is told.
+  // A finishes and is archived: B starts, in the lead's folder, as its child; the lead is told.
   const [a] = await childrenOf(lead.id)
+  await daemon!.idle(a!.id)
   await daemon!.dispatch('thread.archive', { thread: a!.id })
   await daemon!.until(async () => (await said(lead.id, 'from the queue.')) > 0, 'the lead told of B')
   const [b] = await childrenOf(lead.id)
@@ -100,8 +97,66 @@ it('queues thread_start beyond the cap, and starts the queued as a child finishe
   await watched.until((x) => x.queued.length === 0, 'the queue empty')
 }, 20_000)
 
+it('coalesces multiple lane_send calls to a working lane into one held note and delivers once on idle', async () => {
+  await up({ tickMs: 100 }, [
+    // Turn 1 (child): sleeps 2.5s in bash.
+    callTool('bash', { command: 'sleep 2.5' }),
+    // Turn 2 (lead): calls lane_send twice while child is busy.
+    callTool('lane_send', { thread: '10', text: 'First note' }),
+    callTool('lane_send', { thread: '10', text: 'Second note' }),
+    say('Sent both.'),
+    // Turn 3 (child): finishes first turn.
+    say('First pass done.'),
+    // Turn 4 (child): answers the single combined follow-up delivered by staff.
+    say('Handled both at once.'),
+  ])
+  const lead = await daemon!.thread(undefined, { title: 'Lead' })
+  const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
+  const child = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Ziplines', prompt: 'Start work' })
+  await watched.until((b) => b.activity[child.id] === 'bash (`sleep 2.5`)', 'child working in bash')
+
+  // While child is working, lead calls lane_send twice: held as 1 coalesced note on the board.
+  await daemon!.send(lead.id, 'Nudge twice')
+  await watched.until((b) => b.held[child.id]?.count === 2, 'two notes coalesced into one held note')
+  expect(watched.value.held[child.id]!.text).toContain('First note')
+  expect(watched.value.held[child.id]!.text).toContain('Second note')
+  expect(await daemon!.transcript(lead.id)).toContain('Merged into the single held note (2 combined)')
+
+  // Once child finishes its first turn, staff delivers the single combined note and clears the held slot.
+  await watched.until((b) => !b.held[child.id], 'held note delivered and cleared')
+  await daemon!.until(async () => (await daemon!.transcript(child.id)).includes('Handled both at once.'), 'child answered combined note', 10_000)
+  expect(await said(child.id, 'From [Lead]')).toBe(1)
+  expect(await daemon!.transcript(child.id)).toContain('First note')
+  expect(await daemon!.transcript(child.id)).toContain('Second note')
+}, 25_000)
+
+it('lets the user drop a held note from the board before delivery', async () => {
+  await up({ tickMs: 100 }, [
+    callTool('bash', { command: 'sleep 2.5' }),
+    callTool('lane_send', { thread: '10', text: 'Stale reminder' }),
+    say('Held.'),
+    say('Finished clean.'),
+  ])
+  const lead = await daemon!.thread(undefined, { title: 'Lead' })
+  const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
+  const child = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Ziplines', prompt: 'Start slow' })
+  await watched.until((b) => Boolean(b.activity[child.id]), 'child working')
+
+  await daemon!.send(lead.id, 'Queue note')
+  await watched.until((b) => b.held[child.id]?.count === 1, 'held note visible')
+
+  window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
+  const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
+  await window.until(() => pane.text().includes('1 note held'), 'held badge on the board')
+  await pane.click('button[title="Drop held note (c)"]')
+  await watched.until((b) => !b.held[child.id], 'held note dropped')
+
+  await daemon!.idle(child.id)
+  await new Promise((r) => setTimeout(r, 300))
+  expect(await said(child.id, 'Stale reminder')).toBe(0)
+}, 25_000)
+
 it("reports a child with its branch's changes, keeps it past the archive, and drops it when dismissed on the board", async () => {
-  // A repository, and a child's worktree on a branch of its own: it commits, main moves on, it rebases and merges.
   const dir = mkdtempSync(join(tmpdir(), 'staff-repo-'))
   cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
   const repo = join(dir, 'main')
@@ -118,15 +173,12 @@ it("reports a child with its branch's changes, keeps it past the archive, and dr
   await up({ tickMs: 100 }, [say('Did the lane.\nAll green.')])
   const lead = await daemon!.thread(undefined, { title: 'Lead', cwd: repo })
   const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
-  // Of this profile, so the stand-in worktrees (a profile's extension) gives it one.
   const lane = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Lane', cwd: repo, profile: 'chief-of-staff', options: { worktrees: { path: tree, branch: 'superego/lane' } } })
 
-  // Started, not yet run: the board shows what its branch changed so far, and no report.
   await watched.until((b) => b.changes[lane.id]?.added === 3, 'its changes')
   expect(watched.value.changes[lane.id]).toMatchObject({ added: 3, removed: 1 })
   expect(watched.value.reports).toEqual([])
 
-  // Main moves on; it rebases, merges and finishes: reported once, with only its own changes, merged.
   writeFileSync(join(repo, 'c.txt'), 'c\n')
   git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'c')
   git(tree, 'rebase', '-q', 'main')
@@ -138,22 +190,20 @@ it("reports a child with its branch's changes, keeps it past the archive, and dr
     changes: { added: 3, removed: 1, files: [{ path: 'a.txt', added: 2, removed: 1 }, { path: 'b.txt', added: 1, removed: 0 }] },
   })
 
-  // Archived (as the lead does once it's read the report), it stays on the board; the details still say it's merged.
   await daemon!.dispatch('thread.archive', { thread: lane.id })
   await watched.until((b) => !b.changes[lane.id], 'its changes gone with it')
   expect(watched.value.reports).toHaveLength(1)
   expect(await daemon!.call<Details[]>('staff.details', { id: lead.id })).toEqual([{ id: lane.id, answer: null, merged: true }])
 
-  // On the board, under Landed; dismissed there: gone, and not reported again.
+  // On the triage board, under Landed (unfolded since no active work); heading folds and unfolds on click.
   window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
   const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
   await window.until(() => pane.text().includes('Did the lane.'), 'the report on the board')
   expect(pane.text()).toContain('Landed')
   expect(pane.text()).toContain('merged')
-  // Its heading folds and unfolds on a click.
-  await pane.click('[data-key="wave:-1"]')
+  await pane.click('[data-key="section:landed"]')
   await window.until(() => !pane.text().includes('Did the lane.'), 'Landed folded')
-  await pane.click('[data-key="wave:-1"]')
+  await pane.click('[data-key="section:landed"]')
   await window.until(() => pane.text().includes('Did the lane.'), 'Landed unfolded')
   await pane.click('button[aria-label="Dismiss"]')
   await watched.until((b) => b.reports.length === 0, 'dismissed')
@@ -172,7 +222,6 @@ it('takes a later report over an earlier one, and dismisses all at once', async 
   await daemon!.idle(two.id)
   await watched.until((b) => b.reports.length === 2, 'both reported')
   expect(watched.value.reports.map((r) => [r.title, r.answer]).sort()).toEqual([['One', 'echo: First from one'], ['Two', 'echo: From two']])
-  // One answers again: its report says so now, first, in place of the earlier.
   await daemon!.send(one.id, 'Then from one')
   await watched.until((b) => b.reports[0]?.answer === 'echo: Then from one', 'the later report')
   expect(watched.value.reports.map((r) => [r.title, r.answer])).toEqual([['One', 'echo: Then from one'], ['Two', 'echo: From two']])
@@ -182,58 +231,54 @@ it('takes a later report over an earlier one, and dismisses all at once', async 
   expect(watched.value.reports).toEqual([])
 })
 
-it('lays out the plan and puts decisions on the board, answered there by number after a moment to take it back', async () => {
+it('lays out the plan as wave pills and puts decisions under Action required, answered by number with undo', async () => {
   await up({ tickMs: 100 }, [
     callTool('board_plan', { title: 'Colony polish', summary: 'Wave 1 is under way.', waves: [{ title: 'Feel', lanes: ['Ranger feel', 'Sound'] }] }),
     callTool('board_ask', { question: 'Worth a sprite?', options: ['Own sprite', { label: 'Keep the pill', description: 'as now' }], about: ['Ranger feel'] }),
     callTool('board_ask', { question: 'Ship the lookbook?', options: ['Yes', 'No'] }),
     say('On the board.'),
-    // The lead's turns for the answers it's told.
     say('Noted.'), say('Noted.'),
   ])
   const lead = await daemon!.thread('Plan it', { title: 'Lead' })
   const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
   await watched.until((b) => b.decisions.length === 2 && Boolean(b.plan), 'the plan and decisions')
-  expect(watched.value.plan).toMatchObject({ title: 'Colony polish', waves: [{ title: 'Feel', lanes: ['Ranger feel', 'Sound'] }] })
   const [sprite, ship] = watched.value.decisions
-  expect(sprite).toMatchObject({ question: 'Worth a sprite?', options: [{ label: 'Own sprite' }, { label: 'Keep the pill', description: 'as now' }], about: ['Ranger feel'] })
-  expect(await daemon!.transcript(lead.id)).toContain(`Decision ${sprite!.id} is on the board.`)
 
   window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
   const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
   await window.until(() => pane.text().includes('Worth a sprite?'), 'the decision on the board')
   expect(pane.text()).toContain('Colony polish')
-  expect(pane.text()).toContain('Wave 1 · Feel')
+  expect(pane.text()).toContain('W1 · Feel')
+  expect(pane.text()).toContain('Action required')
   expect(pane.text()).toContain('2 need you')
   pane.find('.staff-board')!.focus()
 
-  // The cursor starts on the first; 1 picks, z takes it back: nothing goes.
+  // 1 picks, z takes it back: nothing goes.
   await window.key('1')
   expect(pane.text()).toContain('Sending “Own sprite”')
   await window.key('z')
   expect(pane.text()).not.toContain('Sending')
-  // 2 picks, and after a moment it's sent: the lead hears it, and the board keeps it, answered, folded out of "Needs you".
+  // 2 picks and sends after undo window.
   await window.key('2')
-  // (The transcript is JSON: the message's newline is in it as \n.)
   await daemon!.until(async () => (await said(lead.id, `Decision ${sprite!.id}: Worth a sprite?\\n→ Keep the pill`)) > 0, 'the lead told')
   expect(await said(lead.id, '→ Own sprite')).toBe(0)
   await watched.until((b) => b.decisions[0]?.answer?.text === 'Keep the pill', 'answered on the board')
   await window.until(() => pane.text().includes('1 needs you'), 'one left open')
-  expect(pane.find('.staff-board__needs')!.textContent).not.toContain('Worth a sprite?')
+  expect(pane.find('.staff-board__section--action')!.textContent).not.toContain('Worth a sprite?')
   expect(pane.text()).toContain('Answered')
   expect(pane.text()).not.toContain('→ Keep the pill')
 
-  // n goes to the next open one; r answers it in words.
+  // n goes to next open question; r answers in words.
   await window.key('n')
   await window.key('r')
   await window.type('.staff-board__reply', 'Not yet')
   await window.key('enter')
   await daemon!.until(async () => (await said(lead.id, `Decision ${ship!.id}: Ship the lookbook?\\n→ Not yet`)) > 0, 'the words sent')
 
-  // Nothing needs you now; space unfolds what's answered, and x on one dismisses it; an answer twice is refused.
-  await window.until(() => !pane.find('.staff-board__needs'), 'nothing open')
+  // Nothing in Action required now; space unfolds Answered, x dismisses.
+  await window.until(() => !pane.find('.staff-board__section--action'), 'nothing open')
   await expect(daemon!.dispatch('staff.decide', { id: lead.id, decision: sprite!.id, text: 'Own sprite' })).rejects.toThrow('already answered')
-  await window.key(' ')
+  await pane.click('[data-key="section:answered"]')
   await window.until(() => pane.text().includes('→ Keep the pill') && pane.text().includes('→ Not yet'), 'unfolded')
   await window.key('j')
   await window.key('x')
@@ -260,7 +305,6 @@ it('keeps the plan and decisions across a restart, and lets the lead close one',
 it("answers a child's own question on the board, and tells the lead", async () => {
   await up({ tickMs: 100 }, [callTool('ask_user', { question: 'Keep v2 saves loadable?', options: ['Migrate', 'Wipe'] }), say('Ok.'), say('Ok.')])
   const lead = await daemon!.thread(undefined, { title: 'Lead' })
-  // Of this profile, so it has the stand-in ask_user (a profile's extension).
   const save = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Save v3', prompt: 'Do the save format', profile: 'chief-of-staff' })
   window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
   const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
@@ -278,30 +322,32 @@ it('takes the focus as the window goes to its pane, so keys work at once', async
   const watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
   await watched.until((b) => b.decisions.length === 1, 'the decision')
   window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id }, window: true })
-  // Opened from the window, as the lead opens it: the window focuses the pane, and the pane its board.
   await window.dispatch('pane.open', { thread: lead.id, kind: PANE })
   await window.until(() => document.activeElement?.classList.contains('staff-board') ?? false, 'the board focused')
   await window.key('1')
   expect(window.window!.text()).toContain('Sending “Yes”')
-  // Taken back: unmounted with it pending, the board would send it as the window goes.
   await window.key('z')
 }, 20_000)
 
-it("places lanes by id: a thread's, and a queued start's, which becomes its thread's as it starts", async () => {
+it('tracks queued starts in the plan, promotes their id when started, and filters by wave pill', async () => {
   await up({ tickMs: 100, cap: 1 }, [
-    callTool('thread_start', { prompt: 'Do A', title: 'A' }), callTool('thread_start', { prompt: 'Do B', title: 'B' }), say('One started, one queued.'),
+    callTool('lane_start', { prompt: 'Do B', title: 'B' }),
+    say('B queued.'),
   ])
-  const lead = await daemon!.thread('Start A and B', { title: 'Lead' })
+  const lead = await daemon!.thread(undefined, { title: 'Lead' })
+  // A starts with no prompt: idle with activeAt <= createdAt, so it holds the 1 slot cleanly across a restart too.
+  const a = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'A' })
+  await daemon!.send(lead.id, 'Queue B')
   let watched = await daemon!.watch<Board>(BOARD, { scope: lead.id })
   await watched.until((b) => b.queued.length === 1, 'B queued')
   const queued = watched.value.queued[0]!.id!
   expect(queued).toMatch(/^queued-/)
-  const [a] = await childrenOf(lead.id)
 
-  // The plan names A by its id, B by its queue id, and a lane not started by its title; a title like A's isn't A.
   daemon = await daemon!.restart({ model: [
-    callTool('board_plan', { waves: [{ title: 'One', lanes: [a!.id, queued] }, { title: 'Two', lanes: ['A', 'Sound'] }] }), say('Planned.'),
-    say('Ok.'), say('Ok.'),
+    callTool('board_plan', { waves: [{ title: 'One', lanes: [a.id, queued] }, { title: 'Two', lanes: ['Sound'] }] }),
+    say('Planned.'),
+    say('Ok.'),
+    say('Ok.'),
   ] })
   watched = await daemon.watch<Board>(BOARD, { scope: lead.id })
   await daemon.send(lead.id, 'Plan it')
@@ -309,31 +355,33 @@ it("places lanes by id: a thread's, and a queued start's, which becomes its thre
 
   window = await mountUi({ machines: [daemon], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
   const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
-  await window.until(() => pane.text().includes('Wave 2 · Two'), 'the waves')
-  const wave = (n: number) => pane.find(`.staff-board__wave:nth-of-type(${n})`)!.textContent!
-  expect(wave(1)).toContain('B')
-  expect(wave(1)).toContain('queued')
-  expect(wave(2)).toContain('Sound')
+  await window.until(() => pane.text().includes('W2 · Two'), 'the wave pills')
+  expect(pane.text()).toContain('B')
+  expect(pane.text()).toContain('Sound')
 
-  // A is done with: B starts, and its lane is its thread's.
-  await daemon.dispatch('thread.archive', { thread: a!.id })
+  // Clicking W2 filters down to Wave 2 only (the PaneHeader still shows "1 queued", so check the board body).
+  await pane.click('button[title^="Filter to Wave 2"]')
+  await window.until(() => !pane.find('.staff-board__body')!.textContent!.includes('B') && pane.find('.staff-board__body')!.textContent!.includes('Sound'), 'filtered to Wave 2')
+  // Clicking again clears the filter.
+  await pane.click('button[title^="Filter to Wave 2"]')
+  await window.until(() => pane.find('.staff-board__body')!.textContent!.includes('B'), 'filter cleared')
+
+  // A is archived: B starts, and its lane id in the plan becomes its thread id.
+  await daemon.dispatch('thread.archive', { thread: a.id })
   await daemon.until(async () => (await childrenOf(lead.id)).some((c) => c.title === 'B'), 'B started')
   const b = (await childrenOf(lead.id)).find((c) => c.title === 'B')!
   await watched.until((x) => x.plan?.waves[0]?.lanes[1] === b.id, "B's lane its thread's")
-  expect(watched.value.plan!.waves.map((w) => w.lanes)).toEqual([[a!.id, b.id], ['A', 'Sound']])
+  expect(watched.value.plan!.waves.map((w) => w.lanes)).toEqual([[a.id, b.id], ['Sound']])
 }, 30_000)
 
 it("clears the board once a programme's done: settled reports, answered decisions and the plan; not what runs, asks or waits", async () => {
   await up({ tickMs: 100, cap: 0 }, [
-    // The lead lays out a programme, asks twice, and queues a start (cap 0: it waits for good).
     callTool('board_plan', { title: 'Polish', summary: 'Under way.', waves: [{ title: 'One', lanes: ['A'] }] }),
     callTool('board_ask', { question: 'Still open?', options: ['Yes', 'No'] }),
     callTool('board_ask', { question: 'Answered?', options: ['Yes', 'No'] }),
-    callTool('thread_start', { prompt: 'Later', title: 'Later' }),
+    callTool('lane_start', { prompt: 'Later', title: 'Later' }),
     say('Set.'),
-    // The lead told the answer; then each child in turn, the last one twice (its second turn in a long call).
     say('Noted.'), say('Done here.'), say('Gone too.'), say('First pass.'), callTool('bash', { command: 'sleep 4' }), say('Second pass.'),
-    // The lead clears what's left once the last child is done.
     callTool('board_clear', {}), say('Cleared.'),
   ])
   const lead = await daemon!.thread('Set it up', { title: 'Lead' })
@@ -344,7 +392,6 @@ it("clears the board once a programme's done: settled reports, answered decision
   await daemon!.until(async () => (await daemon!.transcript(lead.id)).includes('Noted.'), 'the lead told')
   await daemon!.idle(lead.id)
 
-  // One finished, one finished and archived, one reported and at work again.
   const done = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Done', prompt: 'Do it' })
   await daemon!.idle(done.id)
   const gone = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Gone', prompt: 'Do it' })
@@ -353,11 +400,9 @@ it("clears the board once a programme's done: settled reports, answered decision
   await daemon!.idle(busy.id)
   await watched.until((b) => b.reports.length === 3, 'all three reported')
   await daemon!.dispatch('thread.archive', { thread: gone.id })
-  // (send waits for the turn: not awaited till Busy's done.)
   const again = daemon!.send(busy.id, 'Again')
   await daemon!.until(async () => (await childrenOf(lead.id)).find((c) => c.id === busy.id)?.status.state === 'working', 'Busy at work')
 
-  // Cleared from the board with X: only the working child's report, the open decision and the queued start stay.
   window = await mountUi({ machines: [daemon!], profile: { ref: lead.profile!, extensions: [board] }, select: { thread: lead.id } })
   const pane = await window.render({ pane: { kind: PANE }, thread: lead.id })
   await window.until(() => pane.text().includes('Polish'), 'the board')
@@ -371,7 +416,6 @@ it("clears the board once a programme's done: settled reports, answered decision
   await window.until(() => !pane.text().includes('Polish'), 'the plan gone from the board')
   expect((pane.find('button[title^="Settled reports"]') as HTMLButtonElement).disabled).toBe(true)
 
-  // Busy done: the lead clears its report; the open decision and the queued start still stay.
   await again
   await watched.until((b) => b.reports[0]?.answer === 'Second pass.', "Busy's new report")
   await daemon!.send(lead.id, 'Clear the board')

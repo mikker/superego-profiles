@@ -7,7 +7,7 @@ import { NotePane, noteTitle } from './note.tsx'
 export default defineUiExtension({
   ...about,
   // superego.style is 4.2's; the daemon half needs only ^4. 5.0 changed nothing these use.
-  api: '^4.2 || ^5',
+  api: '^5',
   setup(superego) {
     superego.pane('graph', { title: 'Graph', component: GraphPane, menu: true })
     // Notes named in the thread ([[GitHub]], `Work/GitHub/GitHub.md`) open in the note pane.
