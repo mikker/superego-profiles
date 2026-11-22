@@ -8,6 +8,7 @@ Mikkel's [Superego](https://github.com/mikker/superego) profiles.
 | `chief-of-staff` | Leads a project's threads through managed worker lanes, with an action-first triage board (and run and tickets). |
 | `chief-of-staff-worker` | Worker lane started by `chief-of-staff`: `default` without `thread-tools`, so lanes coordinate through the lead. |
 | `obsidian` | Works in an Obsidian vault, with note, vault and graph panes. |
+| `email` | Your Fastmail: a mail pane (Snailblaze's triage and rendering) and tools for the agent to read, triage and write email. Set the token in Settings → Email. |
 
 ## Install
 
