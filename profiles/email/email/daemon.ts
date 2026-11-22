@@ -58,7 +58,7 @@ export function emailExtension(options: EmailOptions = {}) {
       })
 
       const get = <T,>(key: string, fallback: T): T => {
-        try { return (superego.settings.get(key) as T) ?? fallback } catch { return fallback }
+        try { return (superego.settings.get(key) as T) ?? fallback } catch (error) { console.error(`email: reading ${key}:`, error); return fallback }
       }
       const prefs = (): Prefs => ({
         mailboxes: list(get(KEY.mailboxes, 'INBOX')).length ? list(get(KEY.mailboxes, 'INBOX')) : ['INBOX'],
