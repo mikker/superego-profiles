@@ -10,7 +10,7 @@ import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import {
   arr, bool, defineAction, defineDaemonExtension, defineExtension, defineTool, obj, opt, RpcError, str, union,
-  type ThreadInfo,
+  type Block, type ThreadInfo,
 } from 'superego'
 import {
   about, BOARD, EMPTY_BOARD, type Board, type Changes, type Decision, type Details, type HeldNote, type Plan, type Report,
@@ -131,6 +131,42 @@ function callOf(entries: readonly Entry[]) {
   return undefined
 }
 
+/** How long ago, in a word: "now", "5m", "3h", "2d". */
+const ago = (ms: number) => ms < MINUTE ? 'now' : ms < 60 * MINUTE ? `${Math.floor(ms / MINUTE)}m ago` : ms < 24 * 60 * MINUTE ? `${Math.floor(ms / (60 * MINUTE))}h ago` : `${Math.floor(ms / (24 * 60 * MINUTE))}d ago`
+/** A line of a thread's own, short: how long since it last moved, and what its status says when it's stuck. */
+const lineOf = (t: ThreadInfo, now: number) => {
+  const msg = (t.status.state === 'blocked' || t.status.state === 'error') && t.status.msg?.split('\n')[0]?.trim()
+  return msg ? `${ago(now - t.activeAt)} · ${msg.length > 80 ? `${msg.slice(0, 79)}…` : msg}` : ago(now - t.activeAt)
+}
+const itemOf = (t: ThreadInfo, now: number) => ({ title: t.title, thread: t.id, status: t.status.state, subtitle: lineOf(t, now) })
+
+/**
+ * The Staff space: what's waiting on the user (threads blocked on them, and the boards' open decisions) in a callout,
+ * then a card per lead, its project's name over it and itself first, then its lanes (its children not archived), each
+ * linked, with its status and how long since it moved. `open`: each lead's open decisions on its board.
+ */
+export function spaceOf(threads: ThreadInfo[], open: Record<string, number>, now: number): Block[] {
+  const leads = threads.filter((t) => t.profile?.name === PROFILE && !t.archived).sort((a, b) => b.activeAt - a.activeAt)
+  if (!leads.length) return [{ type: 'markdown', text: 'No chief of staff on this machine.' }]
+  const lanesOf = (lead: ThreadInfo) => threads.filter((t) => t.parent === lead.id && !t.archived).sort((a, b) => b.activeAt - a.activeAt)
+  const waiting = [
+    ...leads.flatMap((lead) => [lead, ...lanesOf(lead)]).filter((t) => t.status.state === 'blocked').map((t) => `**${t.title}**`),
+    ...leads.filter((l) => open[l.id]).map((l) => `${open[l.id]} ${open[l.id] === 1 ? 'decision' : 'decisions'} on **${l.title}**'s board`),
+  ]
+  return [
+    ...(waiting.length ? [{ type: 'callout' as const, tone: 'warn' as const, title: 'Waiting on you', text: waiting.join(', ') }] : []),
+    ...leads.map((lead): Block => {
+      const lanes = lanesOf(lead)
+      return {
+        type: 'card', title: lead.project.name, blocks: [
+          { type: 'list', items: [{ ...itemOf(lead, now), detail: lanes.length ? `${lanes.length} ${lanes.length === 1 ? 'lane' : 'lanes'}` : 'no lanes' }] },
+          ...(lanes.length ? [{ type: 'list' as const, items: lanes.map((t) => itemOf(t, now)) }] : []),
+        ],
+      }
+    }),
+  ]
+}
+
 export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerProfile = WORKER_PROFILE }: StaffOptions = {}) {
   return defineDaemonExtension({
     ...about,
@@ -145,6 +181,24 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerP
       /** The thread a tool call's conversation is. */
       const threadOf = (conversationId: number) => superego.threads.of(conversationId)
       const answerOf = (id: string) => superego.threads.lastAnswer(id).catch(() => undefined)
+
+      // The Staff space (a rail tab and its sidebar): every lead here and its lanes, built again as threads change (on
+      // the tick, and as a lead's turns start and end) and set only when it's different. Each machine has its own; the
+      // window shows every machine's under its name.
+      const space = superego.value<Block[]>('staff.space', [])
+      superego.view('staff.space', { title: 'Staff', icon: 'columns', context: 'window', fits: ['space', 'beside'], default: 'space', value: 'staff.space' })
+      let shown = ''
+      async function refresh() {
+        const all = await superego.threads.list()
+        const open: Record<string, number> = {}
+        for (const lead of all.filter(isLead)) open[lead.id] = ((await state.get(lead.id))?.decisions ?? []).filter((d) => !d.answer).length
+        const blocks = spaceOf(all, open, Date.now())
+        const json = JSON.stringify(blocks)
+        if (json === shown || superego.signal.aborted) return
+        shown = json
+        space.set(blocks)
+      }
+      const redraw = () => { refresh().catch((error) => console.error('staff: the Staff space failed to build:', error)) }
 
       /** Each worktree child's changes, worked out again only when it moved on and its branch's tip with it. */
       const known = new Map<string, { activeAt: number; tip?: string; changes?: Changes }>()
@@ -188,6 +242,7 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerP
           queued: (next?.queue ?? []).map((q) => ({ ...(q.id ? { id: q.id } : {}), title: q.args.title ?? q.args.prompt.slice(0, 60), at: q.at })),
           ...kept(next),
         }))
+        redraw()
         return next
       }
 
@@ -245,6 +300,7 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerP
         }
         for (const id of known.keys()) if (!all.some((t) => t.id === id && !t.archived)) known.delete(id)
         for (const id of board.scopes()) if (!leads.some((l) => l.id === id)) board.delete(id)
+        redraw()
 
         async function tickLead(lead: ThreadInfo) {
           const children = all.filter((t) => t.parent === lead.id && !t.archived)
@@ -371,8 +427,11 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerP
 
       // Poke promptly when a lead's turn ends or a thread is archived, so queues/held notes react quickly.
       superego.thread({
+        started() { redraw() },
+        turnStart() { redraw() },
         turnEnd() { void poke() },
         archived() { void poke() },
+        unarchived() { redraw() },
         blocked() { void poke() },
       })
 

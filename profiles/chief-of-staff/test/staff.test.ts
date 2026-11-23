@@ -11,7 +11,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
-import type { ThreadInfo } from 'superego'
+import { blockErrors, type Block, type ThreadInfo } from 'superego'
 import { callTool, mountUi, say, testDaemon, type TestDaemon, type TestWindow } from 'superego/testing'
 import board from '../board.tsx'
 import { readChatter } from '../chatter.tsx'
@@ -463,3 +463,25 @@ it('collapses cross-thread chatter (reports, watchdog, queue starts, board relay
   expect(readChatter([{ type: 'text', text: 'How are things looking?' }])).toBeUndefined()
   expect(readChatter([{ type: 'text', text: 'From now on use strict mode' }])).toBeUndefined()
 })
+
+it("draws the Staff space: what waits on the user, then a card per lead with its lanes, each linked with its status", async () => {
+  await up({ tickMs: 100 }, [say('Lane done.'), callTool('board_ask', { question: 'Worth a sprite?', options: ['Yes', 'No'] }), say('Asked.')])
+  const lead = await daemon!.thread(undefined, { title: 'Lead' })
+  const space = await daemon!.watch<Block[]>('staff.space')
+  const lane = await daemon!.call<ThreadInfo>('thread.start', { parent: lead.id, title: 'Lane', prompt: 'Do it' })
+  await daemon!.idle(lane.id)
+  const card = (blocks: Block[]) => blocks.find((b) => b.type === 'card') as Extract<Block, { type: 'card' }> | undefined
+  const items = (blocks: Block[]) => (card(blocks)?.blocks ?? []).flatMap((b) => b.type === 'list' ? b.items : [])
+  await space.until((b) => items(b).some((i) => i.thread === lane.id && i.status === 'done'), "the lane in its lead's card")
+  expect(items(space.value).map((i) => i.thread)).toEqual([lead.id, lane.id])
+  expect(items(space.value)[0]).toMatchObject({ title: 'Lead', detail: '1 lane' })
+  expect(items(space.value)[1]).toMatchObject({ title: 'Lane', subtitle: 'now' })
+  expect(space.value.some((b) => b.type === 'callout')).toBe(false)
+  expect(blockErrors(space.value, { by: 'extension', extension: 'staff', thread: false })).toEqual([])
+
+  // A decision on the lead's board waits on the user; archived, the lane is off its card.
+  await daemon!.call('thread.send', { thread: lead.id, text: 'Ask' })
+  await space.until((b) => b.some((x) => x.type === 'callout' && x.text.includes("1 decision on **Lead**'s board")), 'the open decision called out')
+  await daemon!.call('thread.archive', { thread: lane.id })
+  await space.until((b) => items(b).length === 1, 'the archived lane gone')
+}, 20_000)
