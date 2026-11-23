@@ -53,6 +53,7 @@ it('reads a message with its inline images resolved and its real attachments', a
   const thread = await daemon!.call<Detail>('email.message', { id: 'm2' })
   expect(thread.thread.map((m) => m.id)).toEqual(['m1', 'm2'])
   expect(thread.text).toBe('Make it noon.\n\nAda')
+  expect(thread.html).toBe('')
 })
 
 it('archives a whole thread, and undoes it', async () => {

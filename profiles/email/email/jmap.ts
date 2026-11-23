@@ -198,9 +198,12 @@ export class Jmap {
     if (!item) throw new JmapError(`No message ${id}.`, 'notFound')
     const values = (item.bodyValues ?? {}) as Record<string, { value?: string }>
     const join = (parts: Raw[] | undefined) => (parts ?? []).map((p) => values[p.partId]?.value).filter((v): v is string => v !== undefined).join('\n').trim()
+    const htmlParts = (item.htmlBody ?? []) as Raw[]
+    const isHtmlPart = (p: Raw) => String(p.type ?? '').toLowerCase().startsWith('text/html')
+    const hasHtmlPart = htmlParts.some(isHtmlPart)
     let text = join(item.textBody)
-    let html = join(item.htmlBody)
-    if (!html) html = inferHTML(values)
+    let html = hasHtmlPart ? join(htmlParts.filter(isHtmlPart)) : ''
+    if (!html && !htmlParts.some((p) => String(p.type ?? '').toLowerCase().startsWith('image/'))) html = inferHTML(values)
     if (!text) text = String(item.preview ?? '').trim()
 
     const raw = (item.attachments ?? []) as Raw[]
@@ -214,9 +217,7 @@ export class Jmap {
     }
 
     // A message of text and image parts with no HTML (a phone's photo between lines): show them in order.
-    const htmlParts = (item.htmlBody ?? []) as Raw[]
-    if (htmlParts.length && !htmlParts.some((p) => String(p.type ?? '').toLowerCase().startsWith('text/html'))
-      && htmlParts.some((p) => String(p.type ?? '').toLowerCase().startsWith('image/'))) {
+    if (htmlParts.length && !hasHtmlPart && htmlParts.some((p) => String(p.type ?? '').toLowerCase().startsWith('image/'))) {
       const fragments: string[] = []
       for (const part of htmlParts) {
         const type = String(part.type ?? '').toLowerCase()
