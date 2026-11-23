@@ -8,9 +8,10 @@ Fastmail's JMAP API.
 
 1. Make a Fastmail API token: fastmail.com → Settings → Privacy & Security → Manage API tokens → New API token. Give it
    **Email** (read and write), **Submission** (to send) and **Contacts** (for the Newsletters workflow).
-2. In Superego: **Settings → Email → Fastmail API token**. Paste it there. It's a secret setting kept by this machine's
-   daemon (`~/.superego/settings.json`); it isn't in the profile, and only you can set it (an agent is refused).
-   `FASTMAIL_API_TOKEN` in the daemon's environment works too.
+2. In Superego: **Settings → Email → Fastmail API token**, or `superego secrets set email.token` in your own terminal.
+   It goes into Superego's secret store (the macOS Keychain; on Linux the Secret Service, else an encrypted file in
+   `~/.superego`). No client, agent or `superego settings` ever sees it, and only you can set it.
+   `FASTMAIL_API_TOKEN` in the daemon's environment works too. Needs Superego with extension API 5.8.
 3. Start a thread with the **email** profile (New thread → profile *email*, or `superego -P email`), and open the
    **Email** pane: the envelope count in the thread's header, the pane menu, or ⌘⇧E.
 
@@ -31,7 +32,7 @@ show them. Triage starts at the oldest thread and moves towards the newest.
 | `x` | block the sender and junk the thread (More menu: block their domain, unblock) |
 | `n` | file a newsletter: sender into the Newsletters contact group, thread into the Newsletters mailbox |
 | `b` | file a receipt: download its attachments (or print it when it has none), then archive |
-| `u` | undo the last action |
+| `u` | undo the last action (the history is kept across restarts, in `~/.superego/extensions/email/`) |
 | `r` | reply (Reply all and Forward are buttons) |
 | `⇧R` | reader mode |
 | space / ⇧space, ⌃D / ⌃U | scroll the message a page / half a page |

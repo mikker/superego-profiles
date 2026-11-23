@@ -18,7 +18,7 @@ async function connected(model: NonNullable<Parameters<typeof testDaemon>[0]>['m
   const state = await daemon.watch<EmailState>(STATE)
   await state.until((s) => s?.state === 'no-token', 'no token yet')
   await daemon.dispatch('settings.set', { key: 'email.sessionUrl', value: server.url })
-  await daemon.dispatch('settings.set', { key: 'email.token', value: TOKEN })
+  await daemon.setSecret('email.token', TOKEN)
   await state.until((s) => s?.state === 'ready', 'connected')
   return state
 }
@@ -66,6 +66,27 @@ it('archives a whole thread, and undoes it', async () => {
   await daemon!.dispatch('email.undo')
   expect(server!.emails.find((e) => e.id === 'm1')!.mailboxIds).toEqual({ 'mb-inbox': true })
   expect(server!.emails.find((e) => e.id === 'm2')!.mailboxIds).toEqual({ 'mb-inbox': true, 'mb-work': true })
+})
+
+it('keeps the token out of settings, and Undo through a reload', async () => {
+  const state = await connected()
+  const settings = JSON.stringify(await daemon!.call('settings.watch'))
+  expect(settings).toContain('"email.token":true')
+  expect(settings).not.toContain(TOKEN)
+  await daemon!.dispatch('email.act', { ids: ['m5'], mode: 'archive', mailbox: 'mb-inbox' })
+  await state.until((s) => s.undo === 'archive', 'undo offered')
+  await daemon!.reload()
+  await state.until((s) => s.state === 'ready' && s.undo === 'archive', 'undo still offered after a reload')
+  await daemon!.dispatch('email.undo')
+  expect(server!.emails.find((e) => e.id === 'm5')!.mailboxIds).toEqual({ 'mb-inbox': true })
+})
+
+it('reconnects when the token is replaced, and stops when it is cleared', async () => {
+  const state = await connected()
+  await daemon!.setSecret('email.token', null)
+  await state.until((s) => s.state === 'no-token', 'no token')
+  await daemon!.setSecret('email.token', TOKEN)
+  await state.until((s) => s.state === 'ready', 'connected again')
 })
 
 it('junks with the junk keyword, and ignores by flagging', async () => {

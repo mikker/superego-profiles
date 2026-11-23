@@ -20,7 +20,7 @@ async function start(model: NonNullable<Parameters<typeof testDaemon>[0]>['model
   await daemon.reload()
   await daemon.dispatch('settings.set', { key: 'email.sessionUrl', value: server.url })
   if (token) {
-    await daemon.dispatch('settings.set', { key: 'email.token', value: TOKEN })
+    await daemon.setSecret('email.token', TOKEN)
     await (await daemon.watch<EmailState>(STATE)).until((s) => s?.state === 'ready', 'connected')
   }
   shown = await mountUi({ machines: [daemonMachine(daemon)], profile: { extensions: [ui] } })

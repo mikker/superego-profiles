@@ -1,7 +1,9 @@
 // email, daemon half: the user's Fastmail over JMAP. It keeps the account's state as a live value (mailboxes and their
 // counts, and a version that moves whenever mail changes: Fastmail's push, a poll, or our own changes), answers the
 // pane's reads (methods), does what the pane and the agent ask (actions, tools), and holds the agent's sends until the
-// user says yes. The token is a secret setting the user enters in Settings → Email; it never leaves this machine.
+// user says yes. The token is a secret the user enters in Settings → Email: kept in Superego's secret store, which no
+// client and no agent reads. The undo history is kept in the extension's own folder, so it outlives a restart.
+import { readFileSync } from 'node:fs'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, resolve } from 'node:path'
@@ -43,7 +45,7 @@ export function emailExtension(options: EmailOptions = {}) {
         id: 'email', title: 'Email', order: 50,
         description: 'Your Fastmail account, for the email profile. Make an API token at Fastmail → Settings → Privacy & Security → Manage API tokens, with Email (and Submission, to send; Contacts, for the Newsletters workflow).',
         settings: [
-          { key: KEY.token, title: 'Fastmail API token', type: { type: 'string', secret: true, placeholder: 'fmu1-…' }, default: '', consent: true },
+          { key: KEY.token, title: 'Fastmail API token', type: { type: 'secret', placeholder: 'fmu1-…' } },
           { key: KEY.senderEmail, title: 'Send as', description: 'The Fastmail identity (address) replies and new mail go out from. Empty: your default identity.', type: { type: 'string', placeholder: 'you@example.com' }, default: '' },
           { key: KEY.mailboxes, title: 'Triage mailboxes', description: 'Mailboxes on top of the sidebar, in order, comma separated. Blocked senders are swept out of these.', type: { type: 'string', placeholder: 'INBOX' }, default: 'INBOX' },
           { key: KEY.refreshMinutes, title: 'Refresh every (minutes)', description: 'A poll on top of Fastmail\'s push. 0: push alone.', type: { type: 'number', min: 0, max: 120, step: 1 }, default: 5 },
@@ -71,14 +73,25 @@ export function emailExtension(options: EmailOptions = {}) {
       const state = superego.value<EmailState>(STATE, { ...NO_STATE, prefs: prefs() })
       const pending = superego.scopedValue<PendingSend[]>(PENDING, [])
       const threadPrefs = superego.state<{ alwaysSend?: boolean }>()
-      const undo: Undo[] = []
+      // Undo outlives reloads and restarts: kept in the extension's folder, written after every change.
+      const undoFile = join(superego.dir, 'undo.json')
+      const undo: Undo[] = (() => { try { return JSON.parse(readFileSync(undoFile, 'utf8')) as Undo[] } catch { return [] } })()
+      let undoWrite: Promise<unknown> = Promise.resolve()
+      const saveUndo = () => {
+        const snapshot = JSON.stringify(undo.slice(-50))
+        undoWrite = undoWrite.then(() => writeFile(undoFile, snapshot)).catch((error) => console.error('email: saving undo:', error))
+      }
+      // The token, read from the secret store as it loads and whenever the user sets it.
+      let token = ''
+      const readToken = async () => {
+        token = String((await superego.secrets.get(KEY.token).catch((error) => { console.error('email: reading the token:', error); return undefined })) || process.env.FASTMAIL_API_TOKEN || '').trim()
+      }
 
       // The client, made again when the token or the server changes.
       let client: Jmap | undefined
       let clientKey = ''
       let connection: AbortController | undefined
       const jmap = (): Jmap => {
-        const token = String(get(KEY.token, '') || process.env.FASTMAIL_API_TOKEN || '').trim()
         if (!token) throw new RpcError('no_token', 'No Fastmail API token yet.', { hint: 'Set one in Settings → Email.' })
         const url = String(get(KEY.sessionUrl, '') || FASTMAIL_SESSION).trim()
         if (!client || clientKey !== `${url} ${token}`) {
@@ -154,13 +167,13 @@ export function emailExtension(options: EmailOptions = {}) {
         void refresh().then(() => connect(), () => {})
         schedule()
       }
-      let lastKey = ''
+      let lastUrl = String(get(KEY.sessionUrl, ''))
       superego.settings.onChange(() => {
-        const key = `${get(KEY.token, '')} ${get(KEY.sessionUrl, '')}`
-        if (key !== lastKey) { lastKey = key; start() } else { schedule(); publish({}) }
+        const url = String(get(KEY.sessionUrl, ''))
+        if (url !== lastUrl) { lastUrl = url; start() } else { schedule(); publish({}) }
       })
-      lastKey = `${get(KEY.token, '')} ${get(KEY.sessionUrl, '')}`
-      start()
+      superego.secrets.onChange(KEY.token, () => { void readToken().then(start) })
+      void readToken().then(start)
       superego.signal.addEventListener('abort', () => { clearInterval(poll); clearTimeout(pushTimer); connection?.abort() }, { once: true })
 
       // Reads and changes, shared by the pane's methods and actions and the agent's tools.
@@ -235,7 +248,7 @@ export function emailExtension(options: EmailOptions = {}) {
         if (params.mode === 'ignore') {
           const fresh = entries.filter((m) => !m.flagged)
           await j.keywords(entries.map((m) => m.id), ['$flagged'], [])
-          if (fresh.length) undo.push({ label: 'ignore', kind: 'ignore', entries: fresh.map(entryOf), source: source.id, destination: source.id })
+          if (fresh.length) { undo.push({ label: 'ignore', kind: 'ignore', entries: fresh.map(entryOf), source: source.id, destination: source.id }); saveUndo() }
           changed()
           return { status: `ignored thread (${what})` }
         }
@@ -248,6 +261,7 @@ export function emailExtension(options: EmailOptions = {}) {
         const done = entries.filter((m) => moved.includes(m.id)).map(entryOf)
         undo.push({ label: `${params.mode === 'move' ? `move to ${mailboxName(destination)}` : params.mode}`, kind: junk ? 'junk' : 'move', entries: done, source: source.id, destination: destination.id })
         if (undo.length > 50) undo.shift()
+        saveUndo()
         changed()
         const verb = { archive: 'archived', junk: 'junked', trash: 'trashed', move: `moved to ${mailboxName(destination)}` }[params.mode]
         return { status: moved.length === n ? `${verb} ${what}` : `${verb} ${moved.length}/${n} messages` }
@@ -256,11 +270,12 @@ export function emailExtension(options: EmailOptions = {}) {
       async function undoLast() {
         const last = undo.pop()
         if (!last) return { status: 'nothing to undo' }
+        saveUndo()
         try {
           const j = jmap()
           if (last.kind === 'ignore') await j.keywords(last.entries.map((e) => e.id), [], ['$flagged'])
           else await j.restore(last.entries, last.source, last.destination, { junk: last.kind === 'junk' })
-        } catch (error) { undo.push(last); throw error }
+        } catch (error) { undo.push(last); saveUndo(); throw error }
         changed()
         return { status: `undid ${last.label}` }
       }

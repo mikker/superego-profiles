@@ -8,7 +8,7 @@ export const STATE = 'email.state'
 export const PENDING = 'email.pending'
 
 export const about = {
-  name: 'email', version: '0.1.0', api: '^5.7', title: 'Email',
+  name: 'email', version: '0.2.0', api: '^5.8', title: 'Email',
   description: 'Your Fastmail account over JMAP: a mail pane, and tools for the agent to read, triage and write email.',
   panes: {
     [PANE]: "the user's Fastmail: mailboxes, a mailbox's threads, one message rendered, and a composer. Params (all optional): { mailbox } a mailbox name or role (inbox, archive, drafts, sent, junk, trash), { message } a message id to show, { draft } a draft's id to open in the composer, { search } words to search for",

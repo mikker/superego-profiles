@@ -5,13 +5,10 @@ like it) better, with what the profile does meanwhile.
 
 ## Secrets
 
-1. **A real secret store for settings.** `{ type: 'string', secret: true }` only masks the field in Settings. The value
-   sits in plain text in `~/.superego/settings.json`, every settings snapshot sends it to every client, and
-   `superego settings` prints it, so any thread's agent with a shell can read the Fastmail token (which can send mail).
-   Proposed: `superego.secrets` in the daemon half (`get(key)`, `set` only from a consent action or Settings), values
-   kept in the OS keychain or an encrypted file, never in snapshots or `settings` output (clients get "set" / "not
-   set"), and listed under `about.secrets` so Ego and agents never read them. *Meanwhile:* a `secret`, `consent`
-   setting (an agent can't set it, but can read it), or `FASTMAIL_API_TOKEN` in the daemon's environment.
+1. ~~**A real secret store for settings.**~~ Done in extension API 5.8: a `secret` setting type kept in the OS
+   keychain (or an encrypted file), read with `superego.secrets.get`, never sent to clients, set only by the user. The
+   token lives there now. Alongside it, `superego.dir` (a private folder per extension) keeps the undo history across
+   restarts. Still open: a key-value API on top of it, once a second extension needs one.
 
 ## Running in the background
 
@@ -89,7 +86,8 @@ like it) better, with what the profile does meanwhile.
 
 ## Settings
 
-14. **List settings.** Blocked senders, the remote-content allowlist and the triage mailboxes are lists, held as
+14. **List settings.** Blocked senders, the remote-content allowlist and the triage mailboxes are lists you edit, so they stay settings
+    rather than going into `superego.dir`. They're held as
     comma-separated strings. Proposed: `{ type: 'list', of: 'string' }` with add/remove in Settings, and a
     `{ type: 'choice', options: () => … }` fed from live data (the account's mailboxes).
 
