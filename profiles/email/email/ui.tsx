@@ -324,6 +324,7 @@ function EmailPane({ machine, pane }: PaneProps) {
   const [showThread, setShowThread] = useState(false)
   const [narrowView, setNarrowView] = useState<'list' | 'message'>(params.message ? 'message' : 'list')
   const frame = useRef<FrameHandle | null>(null)
+  const lastIndexRef = useRef<number>(-1)
   const go = (id: string, p: Record<string, unknown>) => dispatch(id, p, { machine: machine.id })
   const say = (text: string, error = false) => setStatus({ text, error })
   useEffect(() => { if (status && !status.error) { const t = setTimeout(() => setStatus(undefined), 4000); return () => clearTimeout(t) } }, [status])
@@ -341,12 +342,18 @@ function EmailPane({ machine, pane }: PaneProps) {
   const threads = useMemo(() => (list.data?.threads ?? []).filter((t) => !hidden.has(t.key)), [list.data, hidden])
   useEffect(() => { if (list.data?.note) say(list.data.note) }, [list.data?.note])
 
+  // Reset fallback index when switching mailbox or search.
+  useEffect(() => { lastIndexRef.current = -1 }, [box?.id, query])
+
   // Triage starts at the oldest thread, as Snailblaze does; the list shows the newest first.
   const current = threads.find((t) => t.key === selected)
+  const index = current ? threads.indexOf(current) : -1
+  if (index >= 0) lastIndexRef.current = index
   useEffect(() => {
     if (!list.data || params.message && viewing === params.message && !selected) return
     if (!current && threads.length) {
-      const pick = threads[threads.length - 1]!
+      const i = lastIndexRef.current
+      const pick = i >= 0 ? threads[Math.min(i, threads.length - 1)]! : threads[threads.length - 1]!
       setSelected(pick.key)
       setViewing(pick.latest.id)
     } else if (!threads.length) { setSelected(undefined); if (!params.message) setViewing(undefined) }
@@ -364,24 +371,31 @@ function EmailPane({ machine, pane }: PaneProps) {
     void go('email.mark', { ids: [detail.summary.id], seen: true }).catch(() => {})
   }, [detail?.summary.id])
 
+  const focusPane = () => {
+    if (!root || compose) return
+    const active = document.activeElement
+    if (active && root.contains(active) && active.tagName !== 'IFRAME') return
+    root.focus({ preventScroll: true })
+  }
+
   const select = (thread: Thread | undefined) => {
     if (!thread) return
     setSelected(thread.key)
     setViewing(thread.latest.id)
     setNarrowView('message')
     document.querySelector(`[data-thread="${CSS.escape(thread.key)}"]`)?.scrollIntoView({ block: 'nearest' })
+    focusPane()
   }
-  const index = current ? threads.indexOf(current) : -1
   const next = () => { if (index > 0) select(threads[index - 1]); else say('End of mailbox') }
   const back = () => { if (index >= 0 && index < threads.length - 1) select(threads[index + 1]); else say('At start') }
 
-  /** Take the current thread out of the list at once, and move on to the next as Snailblaze does. */
+  /** Take the current thread out of the list at once, and move on to the next in the list. */
   const advance = (thread: Thread) => {
     const i = threads.indexOf(thread)
     const rest = threads.filter((t) => t !== thread)
     setHidden((h) => new Set([...h, thread.key]))
-    const pick = rest[Math.max(0, i - 1)] ?? rest[0]
-    if (pick) { setSelected(pick.key); setViewing(pick.latest.id) } else { setSelected(undefined); setViewing(undefined); setNarrowView('list') }
+    const pick = rest[Math.min(i, rest.length - 1)]
+    if (pick) { setSelected(pick.key); setViewing(pick.latest.id); focusPane() } else { setSelected(undefined); setViewing(undefined); setNarrowView('list') }
   }
   const onThread = async (mode: MoveMode | 'newsletter' | 'block' | 'block-domain' | 'receipt', destination?: string) => {
     const thread = current
@@ -666,7 +680,7 @@ function EmailPane({ machine, pane }: PaneProps) {
   )
 
   return (
-    <div className={`em${narrow ? ' em-narrow' : ''}`} ref={setRoot} tabIndex={-1} onKeyDown={onKey}>
+    <div className={`em${narrow ? ' em-narrow' : ''}`} ref={setRoot} tabIndex={-1} data-focus onKeyDown={onKey}>
       {sidebarEl}
       {listEl}
       {messageEl}
