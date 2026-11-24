@@ -141,11 +141,11 @@ const lineOf = (t: ThreadInfo, now: number) => {
 const itemOf = (t: ThreadInfo, now: number) => ({ title: t.title, thread: t.id, status: t.status.state, subtitle: lineOf(t, now) })
 
 /**
- * The Staff space: what's waiting on the user (threads blocked on them, and the boards' open decisions) in a callout,
+ * The Staff sidebar: what's waiting on the user (threads blocked on them, and the boards' open decisions) in a callout,
  * then a card per lead, its project's name over it and itself first, then its lanes (its children not archived), each
  * linked, with its status and how long since it moved. `open`: each lead's open decisions on its board.
  */
-export function spaceOf(threads: ThreadInfo[], open: Record<string, number>, now: number): Block[] {
+export function sidebarOf(threads: ThreadInfo[], open: Record<string, number>, now: number): Block[] {
   const leads = threads.filter((t) => t.profile?.name === PROFILE && !t.archived).sort((a, b) => b.activeAt - a.activeAt)
   if (!leads.length) return [{ type: 'markdown', text: 'No chief of staff on this machine.' }]
   const lanesOf = (lead: ThreadInfo) => threads.filter((t) => t.parent === lead.id && !t.archived).sort((a, b) => b.activeAt - a.activeAt)
@@ -182,23 +182,23 @@ export function staff({ tickMs = 30_000, stallMs = 15 * MINUTE, cap = 4, workerP
       const threadOf = (conversationId: number) => superego.threads.of(conversationId)
       const answerOf = (id: string) => superego.threads.lastAnswer(id).catch(() => undefined)
 
-      // The Staff space (a rail tab and its sidebar): every lead here and its lanes, built again as threads change (on
+      // The Staff sidebar (a rail tab and what it opens): every lead here and its lanes, built again as threads change (on
       // the tick, and as a lead's turns start and end) and set only when it's different. Each machine has its own; the
       // window shows every machine's under its name.
-      const space = superego.value<Block[]>('staff.space', [])
-      superego.view('staff.space', { title: 'Staff', icon: 'columns', context: 'window', fits: ['space', 'beside'], default: 'space', value: 'staff.space' })
+      const sidebar = superego.value<Block[]>('staff.sidebar', [])
+      superego.view('staff.sidebar', { title: 'Staff', icon: 'columns', context: 'window', fits: ['sidebar', 'beside'], default: 'sidebar', value: 'staff.sidebar' })
       let shown = ''
       async function refresh() {
         const all = await superego.threads.list()
         const open: Record<string, number> = {}
         for (const lead of all.filter(isLead)) open[lead.id] = ((await state.get(lead.id))?.decisions ?? []).filter((d) => !d.answer).length
-        const blocks = spaceOf(all, open, Date.now())
+        const blocks = sidebarOf(all, open, Date.now())
         const json = JSON.stringify(blocks)
         if (json === shown || superego.signal.aborted) return
         shown = json
-        space.set(blocks)
+        sidebar.set(blocks)
       }
-      const redraw = () => { refresh().catch((error) => console.error('staff: the Staff space failed to build:', error)) }
+      const redraw = () => { refresh().catch((error) => console.error('staff: the Staff sidebar failed to build:', error)) }
 
       /** Each worktree child's changes, worked out again only when it moved on and its branch's tip with it. */
       const known = new Map<string, { activeAt: number; tip?: string; changes?: Changes }>()
