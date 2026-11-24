@@ -1,7 +1,7 @@
 // Collapses cross-thread chatter (reports from children, messages from the lead, watchdog notices, queue starts,
 // board relays) into compact expandable one-line rows in the transcript via `composer.sentWith`.
 import { useState } from 'react'
-import { Markdown, ThreadRef, type MachineEntry, type SentBlock, type SentWith, type ThreadInfo } from 'superego/ui'
+import { CaretRightIcon, Markdown, ThreadRef, type MachineEntry, type SentBlock, type SentWith, type ThreadInfo } from 'superego/ui'
 
 export type ChatterItem = {
   kind: 'from' | 'watchdog' | 'queued' | 'relay'
@@ -101,15 +101,15 @@ function ChatterRow({ machine, item }: { machine: MachineEntry; item: ChatterIte
   return (
     <div className={`staff-chatter${open ? ' is-open' : ''}`}>
       <button type="button" className="staff-chatter__head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className={`staff-chatter__chev${open ? ' is-open' : ''}`}>▸</span>{' '}
-        <span className="staff-chatter__prefix">{prefix}</span>{' '}
+        <CaretRightIcon size={12} className={`staff-chatter__chev${open ? ' is-open' : ''}`} aria-hidden />
+        <span className="staff-chatter__prefix">{prefix}</span>
         {item.threadId ? (
           <span className="staff-chatter__ref" onClick={(e) => e.stopPropagation()}>
             <ThreadRef machine={machine.id} id={item.threadId}>{item.threadTitle}</ThreadRef>
           </span>
         ) : null}
-        {item.threadId ? ' ' : ''}
-        <span className="staff-chatter__summary">{item.summary}</span>
+        {item.summary ? <span className="staff-chatter__sep">·</span> : null}
+        {item.summary ? <span className="staff-chatter__summary">{item.summary}</span> : null}
       </button>
       {open && (
         <div className="staff-chatter__body">
@@ -134,14 +134,19 @@ export const chatterSentWith: SentWith<ChatterItem> = {
 }
 
 export const CHATTER_CSS = `
-  .staff-chatter-list { display: block; width: 100%; max-width: 100%; min-width: 0; white-space: normal; text-align: left; }
-  .staff-chatter { font-size: var(--superego-text-sm); color: var(--superego-muted); max-width: 100%; min-width: 0; }
+  .staff-chatter-list { display: block; width: 100%; max-width: 100%; min-width: 0; margin-top: -6px; white-space: normal; text-align: left; }
+  .staff-chatter { font-size: var(--superego-text-sm); line-height: 1.45; color: var(--superego-muted); max-width: 100%; min-width: 0; }
   .staff-chatter + .staff-chatter { margin-top: 4px; }
-  .staff-chatter__head { all: unset; box-sizing: border-box; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; width: 100%; max-width: 100%; padding: 2px 4px; border-radius: var(--superego-radius); cursor: pointer; text-align: left; }
-  .staff-chatter__head:hover { background: var(--superego-hover); color: var(--superego-text); }
-  .staff-chatter__chev { display: inline-block; width: 10px; color: var(--superego-faint); transition: transform .15s ease; }
+  .staff-chatter__head { all: unset; box-sizing: border-box; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; width: 100%; max-width: 100%; cursor: pointer; text-align: left; }
+  .staff-chatter__head:hover .staff-chatter__chev, .staff-chatter__head:hover .staff-chatter__summary { color: var(--superego-text); }
+  .staff-chatter__chev { display: inline-block; vertical-align: -2px; margin-right: 5px; color: var(--superego-faint); transition: transform .15s ease, color .15s ease; }
   .staff-chatter__chev.is-open { transform: rotate(90deg); }
-  .staff-chatter__prefix { color: var(--superego-faint); }
-  .staff-chatter__body { margin: 4px 0 2px 14px; padding: 6px 8px; border-left: 2px solid var(--superego-line); color: var(--superego-text); overflow-wrap: anywhere; text-align: left; }
+  .staff-chatter__prefix { color: var(--superego-faint); margin-right: 5px; }
+  .staff-chatter__ref { display: inline; }
+  .staff-chatter__ref .thread-ref { vertical-align: baseline; }
+  .staff-chatter__ref .thread-ref__title { max-width: 28ch; }
+  .staff-chatter__sep { color: var(--superego-faint); margin: 0 5px; }
+  .staff-chatter__summary { color: var(--superego-muted); transition: color .15s ease; }
+  .staff-chatter__body { margin: 6px 0 2px 17px; padding: 4px 0 4px 10px; border-left: 2px solid var(--superego-line); color: var(--superego-text); overflow-wrap: anywhere; text-align: left; }
   .staff-chatter__body .md { line-height: 1.45; }
 `
