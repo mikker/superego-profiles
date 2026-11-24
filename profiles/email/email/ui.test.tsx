@@ -123,14 +123,20 @@ it('copies an email:<id> reference from the toolbar', async () => {
   const pane = await shown!.render({ pane: { kind: 'email' }, thread: thread.id })
   await shown!.until(() => pane.find('.em-subject')?.textContent === 'You won a prize', 'the oldest thread')
   let copied = ''
+  const origExec = document.execCommand
+  document.execCommand = () => false
   Object.defineProperty(navigator, 'clipboard', {
     configurable: true,
     value: { writeText: async (text: string) => { copied = text } },
   })
-  await pane.click('.em-toolbar [aria-label="Copy reference"]')
-  await shown!.until(() => copied !== '', 'copied')
-  expect(copied).toBe('[You won a prize](email:m5)')
-  await shown!.until(() => pane.text().includes('copied reference'), 'status')
+  try {
+    await pane.click('.em-toolbar [aria-label="Copy reference"]')
+    await shown!.until(() => copied !== '', 'copied')
+    expect(copied).toBe('[You won a prize](email:m5)')
+    await shown!.until(() => pane.text().includes('copied reference'), 'status')
+  } finally {
+    document.execCommand = origExec
+  }
 })
 
 it('shows the inbox count in the header', async () => {

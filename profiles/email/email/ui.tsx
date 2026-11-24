@@ -109,6 +109,27 @@ const toBase64 = (file: File) => new Promise<string>((resolve, reject) => {
   reader.readAsDataURL(file)
 })
 
+async function copyText(text: string) {
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement : undefined
+  const selection = document.getSelection()
+  const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, i) => selection.getRangeAt(i)) : []
+  const area = document.createElement('textarea')
+  area.value = text
+  area.setAttribute('readonly', '')
+  area.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;user-select:text'
+  document.body.append(area)
+  area.select()
+  let ok = false
+  try { ok = document.execCommand('copy') } finally {
+    area.remove()
+    focused?.focus({ preventScroll: true })
+    if (selection) { selection.removeAllRanges(); for (const range of ranges) selection.addRange(range) }
+  }
+  if (ok) return
+  if (!navigator.clipboard) throw new Error('No way to copy here')
+  await navigator.clipboard.writeText(text)
+}
+
 async function download(machine: string, a: Attachment) {
   const { data } = await call<{ data: string }>(machine, 'email.blob', { blobId: a.blobId, name: a.name, type: a.type })
   const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0))
@@ -449,7 +470,7 @@ function EmailPane({ machine, pane }: PaneProps) {
     const subject = m.subject.replace(/[[\]]/g, '\\$&')
     const ref = `[${subject}](email:${m.id})`
     try {
-      await navigator.clipboard.writeText(ref)
+      await copyText(ref)
       say('copied reference')
     } catch (error) {
       say(`Couldn't copy: ${(error as Error).message}`, true)
@@ -617,7 +638,7 @@ function EmailPane({ machine, pane }: PaneProps) {
                   {fromDomain && <Menu.Item onClick={() => void onThread('block-domain')}>Block {fromDomain}</Menu.Item>}
                 </>)}
               {fromEmail && <Menu.Item onClick={() => { setSearch(`from:${fromEmail}`); setQuery(`from:${fromEmail}`); setMailboxRef('*') }}>Mail from {fromEmail}</Menu.Item>}
-              {fromEmail && <Menu.Item onClick={() => void navigator.clipboard?.writeText(fromEmail).then(() => say('copied'))}>Copy sender address</Menu.Item>}
+              {fromEmail && <Menu.Item onClick={() => void copyText(fromEmail).then(() => say('copied'), (e: Error) => say(`Couldn't copy: ${e.message}`, true))}>Copy sender address</Menu.Item>}
             </Menu.Popup>
           </Menu.Root>
           <span className="em-spacer" />
