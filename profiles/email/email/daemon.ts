@@ -83,8 +83,15 @@ export function emailExtension(options: EmailOptions = {}) {
       }
       // The token, read from the secret store as it loads and whenever the user sets it.
       let token = ''
+      let tokenError: string | undefined
       const readToken = async () => {
-        token = String((await superego.secrets.get(KEY.token).catch((error) => { console.error('email: reading the token:', error); return undefined })) || process.env.FASTMAIL_API_TOKEN || '').trim()
+        tokenError = undefined
+        const stored = await superego.secrets.get(KEY.token).catch((error) => {
+          console.error('email: reading the token:', error)
+          tokenError = (error as Error).message
+          return undefined
+        })
+        token = String(stored || process.env.FASTMAIL_API_TOKEN || '').trim()
       }
 
       // The client, made again when the token or the server changes.
@@ -92,7 +99,10 @@ export function emailExtension(options: EmailOptions = {}) {
       let clientKey = ''
       let connection: AbortController | undefined
       const jmap = (): Jmap => {
-        if (!token) throw new RpcError('no_token', 'No Fastmail API token yet.', { hint: 'Set one in Settings → Email.' })
+        if (!token) {
+          if (tokenError) throw new RpcError('email', tokenError)
+          throw new RpcError('no_token', 'No Fastmail API token yet.', { hint: 'Set one in Settings → Email.' })
+        }
         const url = String(get(KEY.sessionUrl, '') || FASTMAIL_SESSION).trim()
         if (!client || clientKey !== `${url} ${token}`) {
           client = new Jmap({ token, sessionUrl: url, fetch: options.fetch, signal: superego.signal })
@@ -112,7 +122,8 @@ export function emailExtension(options: EmailOptions = {}) {
       /** Read the mailboxes again and move the version on: everything showing mail reads again. */
       let refreshing: Promise<Mailbox[]> | undefined
       const refresh = (): Promise<Mailbox[]> => {
-        refreshing ??= (async () => {
+        if (refreshing) return refreshing
+        const run = (async () => {
           try {
             const mailboxes = await jmap().mailboxes({ fresh: true })
             const session = await jmap().session()
@@ -121,11 +132,11 @@ export function emailExtension(options: EmailOptions = {}) {
           } catch (error) {
             fail(error)
             throw error
-          } finally {
-            refreshing = undefined
           }
         })()
-        return refreshing
+        refreshing = run
+        void run.then(() => { if (refreshing === run) refreshing = undefined }, () => { if (refreshing === run) refreshing = undefined })
+        return run
       }
       const changed = () => { void refresh().catch(() => {}) }
 

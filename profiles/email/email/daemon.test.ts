@@ -86,6 +86,8 @@ it('reconnects when the token is replaced, and stops when it is cleared', async 
   const state = await connected()
   await daemon!.setSecret('email.token', null)
   await state.until((s) => s.state === 'no-token', 'no token')
+  // A refresh while disconnected must not poison future refreshes once the token returns.
+  await expect(daemon!.dispatch('email.refresh', {})).rejects.toThrow(/No Fastmail API token/)
   await daemon!.setSecret('email.token', TOKEN)
   await state.until((s) => s.state === 'ready', 'connected again')
 })
