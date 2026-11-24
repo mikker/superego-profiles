@@ -13,10 +13,12 @@
 // s stop working/stalled lane, a archive settled lane, x dismiss report/answered decision, X clear settled board, ? help.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
-  ArchiveIcon, DiffStat, defineUiExtension, factsOf, Glyph, has, IconButton, Markdown, PaneButton, PaneHeader, PaneMessage,
-  PaneNote, StatusGlyph, TextField, ThreadRef, useDispatch, useMethod, useSelection, useThreads, useValue, XIcon,
-  type MachineEntry, type PaneProps, type ThreadInfo,
+  ArchiveIcon, ArrowElbowDownRightIcon, ChatTextIcon, ChatsIcon, DiffStat, defineUiExtension, factsOf, Glyph, has,
+  IconButton, Markdown, PaneButton, PaneHeader, PaneMessage, PaneNote, StatusGlyph, TextField, ThreadRef, useDispatch,
+  useMethod, useSelection, useThreads, useValue, XIcon,
+  type MachineEntry, type PaneProps, type ThreadInfo, type ToolRow,
 } from 'superego/ui'
+import { CHATTER_CSS, chatterSentWith } from './chatter.tsx'
 import {
   about, ANSWER, BOARD, PANE, WAITING, type Board, type Changes, type Decision, type Details, type HeldNote, type Option,
   type Report, type Waiting,
@@ -647,7 +649,63 @@ export default defineUiExtension({
   api: '^5',
   setup(superego) {
     superego.pane(PANE, { title: 'Board', component: BoardPane, menu: true })
+    superego.composer.sentWith(chatterSentWith)
+
+    const threadArg = (args: Record<string, unknown>) => typeof args.thread === 'string' ? args.thread : undefined
+    const titleArg = (args: Record<string, unknown>) => typeof args.title === 'string' && args.title.trim() ? args.title.trim() : undefined
+    const refSubject = (call: Parameters<NonNullable<ToolRow['subject']>>[0]) => {
+      const id = threadArg(call.call.arguments)
+      return id ? <ThreadRef machine={call.machine.id} id={id} /> : undefined
+    }
+
+    superego.tool('lane_start', {
+      icon: ArrowElbowDownRightIcon,
+      verbs: ['Started lane', 'Starting lane', 'Start lane failed'],
+      verb: (c) => c.result?.text.startsWith('Queued as ') ? 'Queued lane' : undefined,
+      subject: (c) => titleArg(c.call.arguments) ?? 'lane',
+      phrase: (n) => `started ${n} ${n === 1 ? 'lane' : 'lanes'}`,
+      weight: 2,
+    })
+    superego.tool('lane_send', {
+      icon: ChatTextIcon,
+      verbs: ['Sent to lane', 'Sending to lane', 'Send to lane failed'],
+      verb: (c) => c.result?.text.includes('Held your note') || c.result?.text.includes('Merged into the single held note') || c.result?.text.includes('Replaced the held note')
+        ? 'Held note for'
+        : undefined,
+      subject: refSubject,
+      phrase: (n) => `messaged ${n} ${n === 1 ? 'lane' : 'lanes'}`,
+      weight: 2,
+    })
+    superego.tool('lane_drop_note', {
+      icon: XIcon,
+      verbs: ['Dropped note for', 'Dropping note for', 'Drop note failed'],
+      subject: refSubject,
+      phrase: (n) => `dropped ${n} ${n === 1 ? 'note' : 'notes'}`,
+    })
+    superego.tool('lane_read', {
+      icon: ChatsIcon,
+      verbs: ['Read lane', 'Reading lane', 'Read lane failed'],
+      subject: refSubject,
+      phrase: (n) => `read ${n} ${n === 1 ? 'lane' : 'lanes'}`,
+      weight: 1,
+    })
+    superego.tool('lane_list', {
+      icon: ChatsIcon,
+      verbs: ['Listed lanes', 'Listing lanes', 'List lanes failed'],
+      subject: () => null,
+      phrase: () => 'checked lanes',
+      weight: 1,
+    })
+    superego.tool('lane_archive', {
+      icon: ArchiveIcon,
+      verbs: ['Archived lane', 'Archiving lane', 'Archive lane failed'],
+      subject: refSubject,
+      phrase: (n) => `archived ${n} ${n === 1 ? 'lane' : 'lanes'}`,
+      weight: 1,
+    })
+
     const css = `
+      ${CHATTER_CSS}
       .staff-board { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; outline: none; }
       .staff-board__body { flex: 1; min-height: 0; overflow: auto; padding: var(--superego-space-2) var(--superego-space-3) var(--superego-space-6); line-height: 1.45; }
       .staff-board kbd { font: 11px var(--superego-mono); min-width: 18px; height: 18px; display: inline-grid; place-items: center; padding: 0 4px; border-radius: 4px; background: var(--superego-code-chip); color: var(--superego-muted); }

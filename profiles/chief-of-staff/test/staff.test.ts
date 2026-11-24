@@ -14,6 +14,7 @@ import { afterEach, expect, it } from 'vitest'
 import type { ThreadInfo } from 'superego'
 import { callTool, mountUi, say, testDaemon, type TestDaemon, type TestWindow } from 'superego/testing'
 import board from '../board.tsx'
+import { readChatter } from '../chatter.tsx'
 import type { StaffOptions } from '../staff.ts'
 import { BOARD, PANE, type Board, type Details } from '../shared.ts'
 
@@ -27,6 +28,7 @@ const source = (file: string) => readFileSync(join(here, '..', file), 'utf8')
 const profile = (options: StaffOptions) => ({
   'profile.ts': `import { defineProfile } from 'superego'\nexport default defineProfile({ extensions: ['./staff.ts', './worktrees.ts', './agent-ui.ts'], ui: ['./board.tsx'] })\n`,
   'board.tsx': source('board.tsx'),
+  'chatter.tsx': source('chatter.tsx'),
   'shared.ts': source('shared.ts'),
   'staff.ts': `import { staff } from ${JSON.stringify(join(here, '..', 'staff.ts'))}\nexport default staff(${JSON.stringify({ workerProfile: null, ...options })})\n`,
   'worktrees.ts': `export { worktrees as default } from ${JSON.stringify(join(here, 'stand-ins.ts'))}\n`,
@@ -425,3 +427,39 @@ it("clears the board once a programme's done: settled reports, answered decision
   expect(watched.value.decisions.map((d) => d.id)).toEqual([open!.id])
   expect(watched.value.queued).toHaveLength(1)
 }, 40_000)
+
+it('collapses cross-thread chatter (reports, watchdog, queue starts, board relays) and leaves normal messages alone', () => {
+  const fromReport = readChatter([{ type: 'text', text: 'From [Ziplines](thread:42): finished.\n\nAll 431 tests pass.' }])
+  expect(fromReport).toMatchObject({
+    blocks: [0],
+    items: [{ kind: 'from', threadId: '42', threadTitle: 'Ziplines', summary: 'finished.' }],
+  })
+
+  const fromLead = readChatter([{ type: 'text', text: 'From [Chief of staff](thread:1):\n\nPlease rebase onto main.' }])
+  expect(fromLead).toMatchObject({
+    blocks: [0],
+    items: [{ kind: 'from', threadId: '1', threadTitle: 'Chief of staff', summary: 'Please rebase onto main.' }],
+  })
+
+  const watchdog = readChatter([{ type: 'text', text: 'Watchdog: [Smoke](thread:9) has made no progress for 15 min, in bash (`sleep 960`).' }])
+  expect(watchdog).toMatchObject({
+    blocks: [0],
+    items: [{ kind: 'watchdog', threadId: '9', threadTitle: 'Smoke' }],
+  })
+
+  const queued = readChatter([{ type: 'text', text: 'Started [B](thread:12) (id 12) from the queue.' }])
+  expect(queued).toMatchObject({
+    blocks: [0],
+    items: [{ kind: 'queued', threadId: '12', threadTitle: 'B', summary: 'started from queue' }],
+  })
+
+  const relay = readChatter([{ type: 'text', text: 'On the board, the user answered [Save v3](thread:7): Keep v2?\n→ Wipe' }])
+  expect(relay).toMatchObject({
+    blocks: [0],
+    items: [{ kind: 'relay', threadId: '7', threadTitle: 'Save v3', summary: 'answered → Wipe' }],
+  })
+
+  // Normal user messages are never claimed.
+  expect(readChatter([{ type: 'text', text: 'How are things looking?' }])).toBeUndefined()
+  expect(readChatter([{ type: 'text', text: 'From now on use strict mode' }])).toBeUndefined()
+})

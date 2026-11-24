@@ -6,4 +6,5 @@ export default defineProfile({
   extends: 'user:default',
   description: 'Worker lane for chief-of-staff (no peer thread_send)',
   without: ['thread-tools'],
+  ui: ['./worker.tsx'],
 })
