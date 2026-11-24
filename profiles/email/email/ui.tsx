@@ -3,7 +3,7 @@
 // email tools' calls look in the transcript.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  ArchiveIcon, ArrowClockwiseIcon, ArrowCounterClockwiseIcon, Button, call, CaretLeftIcon, defineAction, defineUiExtension, has, Menu,
+  ArchiveIcon, ArrowClockwiseIcon, ArrowCounterClockwiseIcon, Button, call, CaretLeftIcon, CopyIcon, defineAction, defineUiExtension, has, Menu,
   PaneMessage, PaperclipIcon, PencilSimpleIcon, ShieldWarningIcon, Switch, TextArea, TextField, useDispatch, useMethod, useValue,
   type PaneProps, type SlotProps, type ToolRowCall, type ViewProps,
 } from 'superego/ui'
@@ -443,6 +443,18 @@ function EmailPane({ machine, pane }: PaneProps) {
     } catch (error) { say((error as Error).message, true) }
   }
   useEffect(() => { if (params.draft && ready) void editDraft(params.draft) }, [params.draft, ready])
+  const copyReference = async () => {
+    const m = detail?.summary
+    if (!m) return
+    const subject = m.subject.replace(/[[\]]/g, '\\$&')
+    const ref = `[${subject}](email:${m.id})`
+    try {
+      await navigator.clipboard.writeText(ref)
+      say('copied reference')
+    } catch (error) {
+      say(`Couldn't copy: ${(error as Error).message}`, true)
+    }
+  }
   const toggleRead = async () => {
     const m = detail?.summary
     if (!m) return
@@ -610,6 +622,7 @@ function EmailPane({ machine, pane }: PaneProps) {
           </Menu.Root>
           <span className="em-spacer" />
           {state.undo && <Tool label={`Undo ${state.undo}`} keys="u" icon={<ArrowCounterClockwiseIcon size={16} />} onClick={() => void undo()} />}
+          <Tool label="Copy reference" icon={<CopyIcon size={16} />} onClick={() => void copyReference()} disabled={!detail} />
           <Tool label={reader ? 'Show original' : 'Reader mode'} keys="⇧R" icon={<BookIcon />} pressed={reader} onClick={() => setReader(!reader)} disabled={!detail} />
         </div>
         {status && <div className={status.error ? 'em-status em-status-error' : 'em-status'} role="status">{status.text}{status.error && <button type="button" className="em-link" onClick={() => setStatus(undefined)}>×</button>}</div>}
@@ -812,6 +825,17 @@ export default defineUiExtension({
     superego.pane(PANE, { title: 'Email', icon: EnvelopeIcon, menu: true, component: EmailPane, width: 0.6 })
     superego.view('email.unread', { title: 'Inbox', icon: EnvelopeIcon, context: 'thread', fits: ['header'], default: 'header', component: UnreadPill })
     superego.slot('composer.above', PendingSends)
+    // `email:<id>` links (copied from the toolbar or written by the agent) open that message in the Email pane.
+    superego.link({
+      match: 'email:',
+      async open(href, { machine, thread }) {
+        const id = href.slice('email:'.length).trim()
+        if (!machine || !thread || !id) return 'not an email'
+        await superego.dispatch('pane.open', { thread: thread.id, kind: PANE, params: { message: id } }, { machine })
+        return undefined
+      },
+      target: (href) => `email ${href.slice('email:'.length)}`,
+    })
     // A profile's window action: offered only while one of its threads is shown.
     superego.action(defineAction({
       id: 'email.show', title: 'Show mail', keys: 'mod+shift+e',

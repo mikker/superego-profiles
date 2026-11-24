@@ -118,6 +118,21 @@ it('asks over the composer before the agent sends, and sends on yes', async () =
   expect(server!.sent).toHaveLength(1)
 })
 
+it('copies an email:<id> reference from the toolbar', async () => {
+  const thread = await start()
+  const pane = await shown!.render({ pane: { kind: 'email' }, thread: thread.id })
+  await shown!.until(() => pane.find('.em-subject')?.textContent === 'You won a prize', 'the oldest thread')
+  let copied = ''
+  Object.defineProperty(navigator, 'clipboard', {
+    configurable: true,
+    value: { writeText: async (text: string) => { copied = text } },
+  })
+  await pane.click('.em-toolbar [aria-label="Copy reference"]')
+  await shown!.until(() => copied !== '', 'copied')
+  expect(copied).toBe('[You won a prize](email:m5)')
+  await shown!.until(() => pane.text().includes('copied reference'), 'status')
+})
+
 it('shows the inbox count in the header', async () => {
   const thread = await start()
   const header = await shown!.render({ view: 'email.unread', place: 'header', thread: thread.id })
