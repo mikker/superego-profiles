@@ -374,7 +374,7 @@ function EmailPane({ machine, pane }: PaneProps) {
     if (!list.data || params.message && viewing === params.message && !selected) return
     if (!current && threads.length) {
       const i = lastIndexRef.current
-      const pick = i >= 0 ? threads[Math.min(i, threads.length - 1)]! : threads[threads.length - 1]!
+      const pick = i >= 0 ? threads[Math.max(0, Math.min(i - 1, threads.length - 1))]! : threads[threads.length - 1]!
       setSelected(pick.key)
       setViewing(pick.latest.id)
     } else if (!threads.length) { setSelected(undefined); if (!params.message) setViewing(undefined) }
@@ -410,13 +410,18 @@ function EmailPane({ machine, pane }: PaneProps) {
   const next = () => { if (index > 0) select(threads[index - 1]); else say('End of mailbox') }
   const back = () => { if (index >= 0 && index < threads.length - 1) select(threads[index + 1]); else say('At start') }
 
-  /** Take the current thread out of the list at once, and move on to the next in the list. */
+  /** Take the current thread out of the list at once, and move up to the next newer thread. */
   const advance = (thread: Thread) => {
     const i = threads.indexOf(thread)
     const rest = threads.filter((t) => t !== thread)
     setHidden((h) => new Set([...h, thread.key]))
-    const pick = rest[Math.min(i, rest.length - 1)]
-    if (pick) { setSelected(pick.key); setViewing(pick.latest.id); focusPane() } else { setSelected(undefined); setViewing(undefined); setNarrowView('list') }
+    const pick = rest[Math.max(0, i - 1)]
+    if (pick) {
+      setSelected(pick.key)
+      setViewing(pick.latest.id)
+      document.querySelector(`[data-thread="${CSS.escape(pick.key)}"]`)?.scrollIntoView({ block: 'nearest' })
+      focusPane()
+    } else { setSelected(undefined); setViewing(undefined); setNarrowView('list') }
   }
   const onThread = async (mode: MoveMode | 'newsletter' | 'block' | 'block-domain' | 'receipt', destination?: string) => {
     const thread = current

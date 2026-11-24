@@ -79,7 +79,7 @@ it('triages from the keyboard: a archives, u undoes, k moves to the next thread'
   expect(document.activeElement).toBe(pane.find('.em'))
   press('a')
   await shown!.until(() => server!.emails.find((e) => e.id === 'm1')!.mailboxIds['mb-archive'] === true, 'archived')
-  await shown!.until(() => pane.find('.em-subject')?.textContent === 'You won a prize', 'next in the list')
+  await shown!.until(() => pane.find('.em-subject')?.textContent === 'The Weekly Digest', 'up to the next newer thread')
   await shown!.until(() => pane.text().includes('archived 2 messages'), 'the status')
   expect(document.activeElement).toBe(pane.find('.em'))
   press('u')
