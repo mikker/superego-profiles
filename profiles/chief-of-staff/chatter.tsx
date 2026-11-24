@@ -101,13 +101,14 @@ function ChatterRow({ machine, item }: { machine: MachineEntry; item: ChatterIte
   return (
     <div className={`staff-chatter${open ? ' is-open' : ''}`}>
       <button type="button" className="staff-chatter__head" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        <span className={`staff-chatter__chev${open ? ' is-open' : ''}`}>▸</span>
-        <span className="staff-chatter__prefix">{prefix}</span>
+        <span className={`staff-chatter__chev${open ? ' is-open' : ''}`}>▸</span>{' '}
+        <span className="staff-chatter__prefix">{prefix}</span>{' '}
         {item.threadId ? (
           <span className="staff-chatter__ref" onClick={(e) => e.stopPropagation()}>
             <ThreadRef machine={machine.id} id={item.threadId}>{item.threadTitle}</ThreadRef>
           </span>
         ) : null}
+        {item.threadId ? ' ' : ''}
         <span className="staff-chatter__summary">{item.summary}</span>
       </button>
       {open && (
@@ -133,16 +134,14 @@ export const chatterSentWith: SentWith<ChatterItem> = {
 }
 
 export const CHATTER_CSS = `
-  .staff-chatter-list { display: flex; flex-direction: column; gap: 4px; width: 100%; max-width: 100%; min-width: 0; }
+  .staff-chatter-list { display: block; width: 100%; max-width: 100%; min-width: 0; white-space: normal; text-align: left; }
   .staff-chatter { font-size: var(--superego-text-sm); color: var(--superego-muted); max-width: 100%; min-width: 0; }
-  .staff-chatter__head { all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 6px; width: 100%; max-width: 100%; min-width: 0; overflow: hidden; padding: 2px 6px; border-radius: var(--superego-radius); cursor: pointer; }
+  .staff-chatter + .staff-chatter { margin-top: 4px; }
+  .staff-chatter__head { all: unset; box-sizing: border-box; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 1; overflow: hidden; overflow-wrap: anywhere; width: 100%; max-width: 100%; padding: 2px 4px; border-radius: var(--superego-radius); cursor: pointer; text-align: left; }
   .staff-chatter__head:hover { background: var(--superego-hover); color: var(--superego-text); }
-  .staff-chatter__chev { flex-shrink: 0; width: 10px; color: var(--superego-faint); transition: transform .15s ease; }
+  .staff-chatter__chev { display: inline-block; width: 10px; color: var(--superego-faint); transition: transform .15s ease; }
   .staff-chatter__chev.is-open { transform: rotate(90deg); }
-  .staff-chatter__prefix { flex-shrink: 0; color: var(--superego-faint); white-space: nowrap; }
-  .staff-chatter__ref { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .staff-chatter__ref > * { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: inline-block; vertical-align: bottom; }
-  .staff-chatter__summary { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .staff-chatter__body { margin: 4px 0 2px 16px; padding: 6px 8px; border-left: 2px solid var(--superego-line); color: var(--superego-text); overflow-wrap: anywhere; }
+  .staff-chatter__prefix { color: var(--superego-faint); }
+  .staff-chatter__body { margin: 4px 0 2px 14px; padding: 6px 8px; border-left: 2px solid var(--superego-line); color: var(--superego-text); overflow-wrap: anywhere; text-align: left; }
   .staff-chatter__body .md { line-height: 1.45; }
 `
