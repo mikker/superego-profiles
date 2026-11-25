@@ -8,7 +8,7 @@ Off by default. Turn it on in Settings → Image compression (`Compress large im
 (`Larger than (KB)`, 300 unless changed). From the command line:
 
 ```sh
-superego do settings.set --key image-compression.on --value true
+superego settings set image-compression.on true
 ```
 
 - `daemon.ts`: a `beforeRequest` hook on each request (`hook(GenerationTask, …)`), fitting each image over the size
