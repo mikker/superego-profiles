@@ -1,12 +1,16 @@
-// The vault, as the daemon sees it: notes, their [[links]] and backlinks, read from the thread's folder. Gives the UI
-// two methods (vault.graph, vault.note), the agent two tools (search_notes, backlinks), and a prompt section with the
-// vault's own AGENTS.md.
-import { readdir, readFile } from 'node:fs/promises'
-import { basename, join, relative } from 'node:path'
+// The vault, as the daemon sees it: notes, their [[links]] and backlinks. A thread's vault is its folder when that's an
+// Obsidian vault (it has `.obsidian/`), else the one set in Settings (`vault.path`), else its folder as it is. Gives the
+// UI two methods (vault.graph, vault.note) and a live list of the set vault's notes (vault.list), the agent two tools
+// (search_notes, backlinks) and a prompt section with the vault's own AGENTS.md. New threads that don't start in a
+// vault start in the set one.
+import { statSync, watch } from 'node:fs'
+import { readdir, readFile, stat } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { defineDaemonExtension, defineExtension, defineTool, int, obj, opt, RpcError, section, str } from 'superego'
-import { about, type Graph, type NoteInfo } from './shared.ts'
+import { about, LIST, SETTING, type Graph, type NoteInfo, type VaultList } from './shared.ts'
 
-type Note = { path: string; title: string; folder: string; links: string[]; text: string; aliases: string[] }
+type Note = { path: string; title: string; folder: string; links: string[]; text: string; aliases: string[]; at: number }
 
 const SKIP = new Set(['.obsidian', '.git', '.trash', 'node_modules', '.agents', '.superego'])
 
@@ -19,16 +23,35 @@ async function scan(root: string): Promise<Note[]> {
       const path = join(dir, entry.name)
       if (entry.isDirectory()) await walk(path)
       else if (entry.name.endsWith('.md')) {
-        const text = await readFile(path, 'utf8')
+        const [text, info] = await Promise.all([readFile(path, 'utf8'), stat(path)])
         const links = [...text.matchAll(/!?\[\[([^\]|#^]+)(?:[#^][^\]|]*)?(?:\|[^\]]*)?\]\]/g)].map((m) => m[1]!.trim())
         const rel = relative(root, path)
-        notes.push({ path: rel, title: basename(rel, '.md'), folder: rel.includes('/') ? rel.split('/')[0]! : '', links, text, aliases: aliasesOf(text) })
+        notes.push({ path: rel, title: basename(rel, '.md'), folder: rel.includes('/') ? rel.split('/')[0]! : '', links, text, aliases: aliasesOf(text), at: info.mtimeMs })
       }
     }
   }
   await walk(root)
   // By path, whatever order the disk lists them in: the same answers each time.
   return notes.sort((a, b) => a.path.localeCompare(b.path))
+}
+
+const isFolder = (path: string) => { try { return statSync(path).isDirectory() } catch { return false } }
+
+/** Whether a folder is an Obsidian vault: it has the `.obsidian/` folder Obsidian keeps its settings in. */
+export const isVault = (dir: string) => isFolder(join(dir, '.obsidian'))
+
+/**
+ * A vault folder as set (`~/` for the home folder): where it is, or why it won't do (`problem`), or why it may not be
+ * a vault though it reads (`warning`).
+ */
+export function checkVault(setting: string): { root: string; problem?: string; warning?: string } {
+  const asked = setting.trim()
+  const root = asked === '~' ? homedir() : asked.startsWith('~/') ? join(homedir(), asked.slice(2)) : asked
+  if (!isAbsolute(root)) return { root, problem: `${asked} isn't a full path: start it with / or ~/` }
+  const at = resolve(root)
+  if (!isFolder(at)) return { root: at, problem: `There's no folder at ${asked}` }
+  if (!isVault(at)) return { root: at, warning: `${asked} has no .obsidian folder: it may not be an Obsidian vault` }
+  return { root: at }
 }
 
 /** A note's `aliases` (or `alias`) in its frontmatter: a list, `[a, b]`, or one. */
@@ -93,11 +116,100 @@ export default defineDaemonExtension({
       cache.set(root, { at: Date.now(), notes })
       return notes
     }
-    const notesOfThread = async (thread: string) => notesOf((await superego.threads.get(thread)).cwd)
-    const notesOfCall = (conversationId: number) => notesOfThread(superego.threads.of(conversationId)!)
+
+    superego.settings.register({
+      id: 'vault', title: 'Obsidian vault',
+      description: 'The vault the obsidian profile works on: its Vault space, and threads not started inside a vault.',
+      settings: [{
+        key: SETTING, title: 'Vault folder', description: 'The folder Obsidian opens: the one with the .obsidian folder in it.',
+        type: { type: 'string', placeholder: '~/Documents/Vault' }, default: '',
+        validate: (value) => (typeof value === 'string' && value.trim() ? checkVault(value).problem : undefined),
+      }],
+    })
+    /** The vault set in Settings, if one is and it reads; else undefined. */
+    const configured = () => {
+      const setting = superego.settings.get<string>(SETTING)?.trim()
+      if (!setting) return undefined
+      const vault = checkVault(setting)
+      return vault.problem ? undefined : vault.root
+    }
+    /** A folder's vault: itself if it's a vault, else the one set, else itself (as it always was). */
+    const vaultOf = (cwd: string) => (isVault(cwd) ? cwd : configured() ?? cwd)
+    /** The vault a call is about: its thread's, or with no thread (the space) the one set. */
+    const rootOf = async (thread: string | undefined) => {
+      const root = thread ? vaultOf((await superego.threads.get(thread)).cwd) : configured()
+      if (!root) throw new RpcError('not_found', 'No vault is set: choose its folder in Settings → Obsidian vault')
+      return root
+    }
+    /** The vault of the thread an agent's call is in. */
+    const rootOfCall = (conversationId: number) => rootOf(superego.threads.of(conversationId)!)
+    const notesOfCall = async (conversationId: number) => notesOf(await rootOfCall(conversationId))
+
+    // A thread that doesn't start in a vault starts in the one set, so its files, panes and AGENTS.md are the vault's.
+    superego.thread({
+      starting(draft) {
+        if (isVault(draft.cwd)) return
+        const root = configured()
+        if (root && root !== draft.cwd) return { cwd: root }
+      },
+    })
+
+    // The set vault's notes, newest first, for its space: read again whenever a note (or a folder of them) changes.
+    const list = superego.value<VaultList>(LIST, { root: null, notes: [] })
+    let watching: { root: string; stop: AbortController } | undefined
+    let timer: ReturnType<typeof setTimeout> | undefined
+    let reading = 0
+    const publish = async () => {
+      const setting = superego.settings.get<string>(SETTING)?.trim()
+      if (!setting) return list.set({ root: null, notes: [] })
+      const { root, problem, warning } = checkVault(setting)
+      if (problem) return list.set({ root, problem, notes: [] })
+      const mine = ++reading
+      cache.delete(root)
+      try {
+        const notes = (await notesOf(root)).map(({ path, title, folder, at }) => ({ path, title, folder, at }))
+        if (mine !== reading || superego.signal.aborted) return
+        list.set({ root, ...(warning ? { warning } : {}), notes: notes.sort((a, b) => b.at - a.at || a.path.localeCompare(b.path)) })
+      } catch (error) {
+        if (mine === reading) list.set({ root, problem: `Couldn't read ${setting}: ${(error as Error).message}`, notes: [] })
+      }
+    }
+    const publishSoon = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => void publish(), 150)
+    }
+    /** Watch the set vault (and only it): a note added, changed, moved or gone. Obsidian's own files don't count. */
+    let followed: string | undefined
+    const follow = () => {
+      // Any setting changing calls this: only the vault's matters.
+      const setting = superego.settings.get<string>(SETTING)?.trim() ?? ''
+      if (setting === followed) return
+      followed = setting
+      const vault = setting ? checkVault(setting) : undefined
+      const root = vault && !vault.problem ? vault.root : undefined
+      if (watching?.root === root) return
+      watching?.stop.abort()
+      watching = undefined
+      if (root) {
+        const stop = new AbortController()
+        superego.signal.addEventListener('abort', () => stop.abort(), { once: true })
+        try {
+          watch(root, { recursive: true, signal: stop.signal }, (_event, file) => {
+            const name = file?.toString()
+            if (!name || (!name.split('/').some((part) => part.startsWith('.')) && (name.endsWith('.md') || !/\.[^/]+$/.test(name)))) publishSoon()
+          }).on('error', (error) => { console.error('[vault] watching the vault failed:', error); publishSoon() })
+          watching = { root, stop }
+        } catch (error) {
+          console.error('[vault] watching the vault failed; its list updates only when the setting changes:', error)
+        }
+      }
+      void publish()
+    }
+    superego.settings.onChange(follow)
+    follow()
 
     superego.method('vault.graph', async ({ thread }): Promise<Graph> => {
-      const notes = await notesOfThread(thread)
+      const notes = await notesOf(await rootOf(thread))
       const resolve = resolver(notes)
       const edges: Graph['edges'] = []
       const seen = new Set<string>()
@@ -110,25 +222,29 @@ export default defineDaemonExtension({
         }
       }
       return { nodes: notes.map((n) => ({ id: n.path, title: n.title, folder: n.folder })), edges }
-    }, { params: obj({ thread: str() }) })
+    }, { params: obj({ thread: opt(str()) }) })
 
     // `path`: a path or a [[target]]; `heading` or `block` (a [[Note#Heading]]'s, a [[Note#^block]]'s): its line too.
     superego.method('vault.note', async ({ thread, path, heading, block }): Promise<NoteInfo> => {
-      const notes = await notesOfThread(thread)
+      const root = await rootOf(thread)
+      const notes = await notesOf(root)
       const resolve = resolver(notes)
       const note = resolve(path)
       if (!note) throw new RpcError('not_found', `No note ${path}`)
       const backlinks = backlinksOf(notes, resolve, note).map((n) => ({ path: n.path, title: n.title }))
       const line = heading || block ? lineOf(note.text, { ...(heading ? { heading } : {}), ...(block ? { block } : {}) }) : undefined
-      return { path: note.path, title: note.title, content: note.text, backlinks, ...(line ? { line } : {}) }
-    }, { params: obj({ thread: str(), path: str(), heading: opt(str()), block: opt(str()) }) })
+      return { path: note.path, title: note.title, content: note.text, backlinks, ...(line ? { line } : {}), root }
+    }, { params: obj({ thread: opt(str()), path: str(), heading: opt(str()), block: opt(str()) }) })
 
     superego.agent(defineExtension({
       name: 'vault',
-      // The vault's own rules, as they are now, on every turn.
+      // Where the vault is, if not the thread's folder, and its own rules, as they are now, on every turn.
       sections: [section('vault', async ({ agent }) => {
-        const rules = agent.cwd ? await readFile(join(agent.cwd, 'AGENTS.md'), 'utf8').catch(() => '') : ''
-        return rules ? `The vault's AGENTS.md (its rules for agents; follow them):\n\n${rules}` : undefined
+        if (!agent.cwd) return undefined
+        const root = vaultOf(agent.cwd)
+        const where = root === agent.cwd ? '' : `The vault is ${root}, not your folder (${agent.cwd}): give the file tools its notes' full paths.`
+        const rules = await readFile(join(root, 'AGENTS.md'), 'utf8').catch(() => '')
+        return [where, rules && `The vault's AGENTS.md (its rules for agents; follow them):\n\n${rules}`].filter(Boolean).join('\n\n') || undefined
       })],
       tools: [
         defineTool({
@@ -160,5 +276,10 @@ export default defineDaemonExtension({
         }),
       ],
     }))
+
+    return () => {
+      clearTimeout(timer)
+      watching?.stop.abort()
+    }
   },
 })
