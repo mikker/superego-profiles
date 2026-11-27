@@ -74,6 +74,6 @@ pill), `shared.ts`. Tests: `tickets.test.ts` (parsing, search, the folder, the d
 `ui.test.tsx` (the pane, the pill, and the profiles serving its UI). Run them with `superego extension test tickets
 --user`.
 
-The `chief-of-staff` profile has tickets too: it lists `../default/tickets/daemon.ts` (one set-up,
+The `chief-of-staff` profile has tickets too, as it has run: it lists `../default/tickets/daemon.ts` (one set-up,
 shared) and `./tickets/ui.tsx` through `chief-of-staff/tickets`, a symlink to this folder, since the window loads a
 profile's UI only from inside its own folder.
